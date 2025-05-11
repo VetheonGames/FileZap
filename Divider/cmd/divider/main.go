@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/divider/internal/chunking"
-	"github.com/divider/internal/encryption"
-	"github.com/divider/internal/zap"
+	"github.com/VetheonGames/FileZap/Divider/pkg/chunking"
+	"github.com/VetheonGames/FileZap/Divider/pkg/encryption"
+	"github.com/VetheonGames/FileZap/Divider/pkg/zap"
 )
 
 func main() {
