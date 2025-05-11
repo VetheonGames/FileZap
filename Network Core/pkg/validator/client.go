@@ -22,6 +22,20 @@ type Client struct {
 	availableZaps []string
 }
 
+// GetAddress returns the validator server address
+func (c *Client) GetAddress() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.serverAddress
+}
+
+// SetAddress updates the validator server address
+func (c *Client) SetAddress(address string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.serverAddress = address
+}
+
 type FileInfo struct {
 	Name      string   `json:"name"`
 	ChunkIDs  []string `json:"chunk_ids"`
