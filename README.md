@@ -118,7 +118,7 @@ Start here:
 
 - Check issues labeled 'help wanted'  
 - Read our 'CONTRIBUTING.md'  
-- Message me on (Telegram)[https://t.me/Vetheon]
+- Message me on [Telegram](https://t.me/Vetheon)
 
 ---
 
