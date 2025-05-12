@@ -131,3 +131,44 @@ Start here:
 ## 🌐 Project Status
 
 > FileZap is currently in **pre-alpha**. The client and chunking logic are functional, and a stubbed Validator implementation is being tested. Core crypto logic, networking, and distributed storage enforcement are being iterated on weekly. Early contributors can help shape protocol rules, crypto flows, and incentive mechanics.
+
+> The GUI is till in very rough shape, and the logic is NOT yet properly integrated into it. Validators do not yet do anything, and the Validator Server has yet to be de-coupled from the main program. Eventually Validators will run their own program. In it's current state the network is NON-FUNCTIONAL. So do not expect to be able to distribute files, or download files as of yet.
+
+## TODO
+
+1. **Cryptocurrency Implementation**
+   - Build upon existing rewards system in `crypto/rewards.go`
+   - Implement privacy-focused cryptocurrency features:
+     - Anonymous transaction mechanism
+     - Private wallet addresses
+     - Encrypted transaction amounts
+   - Add wallet management in client and validator
+   - Design consensus mechanism for validators
+   - Create blockchain storage and synchronization
+   - Implement rewards distribution system
+
+2. **Validator Server Decoupling**
+   - Move Validator Server to standalone binary
+   - Implement gRPC API for client-validator communication
+   - Create validator discovery protocol
+   - Add validator reputation system
+   - Implement Byzantine fault tolerance
+   - Create validator node administration tools
+   - Add monitoring and health check endpoints
+   - Implement validator clustering for scalability
+
+3. **Security Enhancements**
+   - Add zero-knowledge proofs for file verification
+   - Implement secure multiparty computation for key sharing
+   - Add rate limiting and DoS protection
+   - Implement reputation-based peer selection
+   - Add file integrity verification using Merkle trees
+   - Implement secure validator communication protocols
+
+4. **Network Improvements**
+   - Add DHT-based peer discovery
+   - Implement NAT traversal
+   - Add bandwidth management
+   - Create chunk replication strategy
+   - Implement efficient peer selection
+   - Add network health monitoring
