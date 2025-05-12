@@ -1,4 +1,4 @@
-cpackage server
+package server
 
 import (
 	"encoding/json"

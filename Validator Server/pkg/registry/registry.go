@@ -8,7 +8,7 @@ import (
     "sync"
     "time"
 
-    "../../NetworkCore/pkg/types"
+    "github.com/VetheonGames/FileZap/NetworkCore/pkg/types"
 )
 
 // FileInfo represents a registered .zap file in the network
