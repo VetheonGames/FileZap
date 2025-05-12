@@ -1,4 +1,4 @@
-name: Go Build
+name: Build FileZap Components
 
 on:
   push:
@@ -7,32 +7,50 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  build-client:
+    name: Build GUI Client
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v3
+      - name: Checkout Repository
+        uses: actions/checkout@v3
 
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: 1.21
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.21
 
-    - name: Cache Go modules
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
+      - name: Make build script executable
+        run: chmod +x ./build.sh
 
-    - name: Install dependencies
-      run: go mod download
+      - name: Build GUI Client
+        run: ./build.sh client
 
-    - name: Run Tests
-      run: go test ./...
+      - name: Upload GUI Client Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: filezap-client
+          path: bin/client/*
 
-    - name: Build
-      run: ./build.sh
+  build-validator:
+    name: Build Validator Server
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.21
+
+      - name: Make build script executable
+        run: chmod +x ./build.sh
+
+      - name: Build Validator Server
+        run: ./build.sh validator
+
+      - name: Upload Validator Server Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: filezap-validator
+          path: bin/validator/*
