@@ -50,7 +50,7 @@ jobs:
         run: ./build.sh validator
 
       - name: Upload Validator Server Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: filezap-validator
           path: bin/validator/*
