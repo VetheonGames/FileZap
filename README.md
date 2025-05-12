@@ -1,5 +1,8 @@
 # 🔒 FileZap
 
+[![Libera Chat](https://img.shields.io/badge/Libera%20Chat-%23filezap-purple?style=flat&logo=libera-chat)](https://web.libera.chat/#filezap)
+[![Telegram](https://img.shields.io/badge/Telegram-Join-26A5E4?style=flat&logo=telegram)](https://t.me/Vetheon)
+
 **FileZap** is a decentralized, cryptographically secured file-splitting and sharing system. It lets users encrypt, divide, and distribute files into chunks—then reassemble them only with the appropriate authorization and after a proof-of-payment process. The system is designed to ensure that uploaded files are **impossible to lose** and **impossible to understand** until you’ve paid for and reconstructed them.
 
 ---
