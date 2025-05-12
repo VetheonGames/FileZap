@@ -103,19 +103,25 @@ func splitMode(inputFile, outputDir string, chunkSize int64) error {
 			return fmt.Errorf("failed to encrypt chunk: %v", err)
 		}
 
-		// Write encrypted chunk
-		encryptedPath := filepath.Join(chunksDir, chunk.Hash)
-		if err := os.WriteFile(encryptedPath, encrypted, 0644); err != nil {
-			return fmt.Errorf("failed to write encrypted chunk: %v", err)
-		}
+// Create chunk metadata
+chunkMeta := zap.ChunkMetadata{
+    Index: chunk.Index,
+    Hash:  chunk.Hash,
+    Size:  chunk.Size,
+}
 
-		// Create chunk metadata
-		zapChunks = append(zapChunks, zap.ChunkMetadata{
-			Index:         chunk.Index,
-			Hash:          chunk.Hash,
-			Size:          chunk.Size,
-			EncryptedHash: chunk.Hash,
-		})
+// Generate unique encrypted hash
+if err := chunkMeta.UpdateEncryptedHash(encrypted); err != nil {
+    return fmt.Errorf("failed to generate encrypted hash: %v", err)
+}
+
+// Write encrypted chunk
+encryptedPath := filepath.Join(chunksDir, chunkMeta.EncryptedHash)
+if err := os.WriteFile(encryptedPath, encrypted, 0644); err != nil {
+    return fmt.Errorf("failed to write encrypted chunk: %v", err)
+}
+
+zapChunks = append(zapChunks, chunkMeta)
 	}
 
 	// Create zap metadata

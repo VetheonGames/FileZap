@@ -6,9 +6,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/VetheonGames/FileZap/NetworkCore/pkg/filemanager"
-	"github.com/VetheonGames/FileZap/NetworkCore/pkg/peer"
-	"github.com/VetheonGames/FileZap/NetworkCore/pkg/validator"
+    "github.com/VetheonGames/FileZap/NetworkCore/pkg/filemanager"
+    "github.com/VetheonGames/FileZap/NetworkCore/pkg/peer"
+    "github.com/VetheonGames/FileZap/NetworkCore/pkg/types"
+    "github.com/VetheonGames/FileZap/NetworkCore/pkg/validator"
 )
 
 // Core represents the main Network Core instance coordinating all components
@@ -25,7 +26,7 @@ func (c *Core) HandleNewZapFile(fileName string, chunks []string) error {
 }
 
 // RequestZapFile requests information about a .zap file from the validator
-func (c *Core) RequestZapFile(fileName string) (*validator.FileInfo, error) {
+func (c *Core) RequestZapFile(fileName string) (*types.FileInfo, error) {
 	return c.validatorClient.RequestZapFile(fileName)
 }
 
