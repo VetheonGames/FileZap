@@ -211,7 +211,7 @@ TODO
 
 - Add network health monitoring
 
-- **Implement validator-assisted deduplication:**
+5. **Implement validator-assisted deduplication:**
 
   - Clients send chunk hashes first
 
