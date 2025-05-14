@@ -211,12 +211,12 @@ TODO
 
 - Add network health monitoring
 
-- Implement validator-assisted deduplication:
+- **Implement validator-assisted deduplication:**
 
-- Clients send chunk hashes first
+  - Clients send chunk hashes first
 
-- Validators reject already-known chunks
+  - Validators reject already-known chunks
 
-- Clients only upload unique chunks
+  - Clients only upload unique chunks
 
-- Validators link reused chunks to the .zap manifest
+  - Validators link reused chunks to the .zap manifest
