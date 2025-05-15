@@ -1,5 +1,7 @@
 # 🔒 FileZap
 
+> Note about the Developer: I am a new dad, and work full time. So I only work on coding projects on the weekend (when I have nothing else going on) please be patient with getting replies on IRC/Telegram/Issues!
+
 [![Libera Chat](https://img.shields.io/badge/Libera%20Chat-%23filezap-purple?style=flat&logo=libera-chat)](https://web.libera.chat/#filezap)
 [![Telegram](https://img.shields.io/badge/Telegram-Join-26A5E4?style=flat&logo=telegram)](https://t.me/Vetheon)
 
