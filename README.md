@@ -1,5 +1,7 @@
 # 🔒 FileZap
 
+> Note about the Developer: I am a new dad, and work full time. So I only work on coding projects on the weekend (when I have nothing else going on) please be patient with getting replies on IRC/Telegram/Issues!
+
 [![Libera Chat](https://img.shields.io/badge/Libera%20Chat-%23filezap-purple?style=flat&logo=libera-chat)](https://web.libera.chat/#filezap)
 [![Telegram](https://img.shields.io/badge/Telegram-Join-26A5E4?style=flat&logo=telegram)](https://t.me/Vetheon)
 
@@ -139,39 +141,84 @@ Start here:
 
 ## TODO
 
+TODO
+
 1. **Cryptocurrency Implementation**
-   - Build upon existing rewards system in `crypto/rewards.go`
-   - Implement privacy-focused cryptocurrency features:
-     - Anonymous transaction mechanism
-     - Private wallet addresses
-     - Encrypted transaction amounts
-   - Add wallet management in client and validator
-   - Design consensus mechanism for validators
-   - Create blockchain storage and synchronization
-   - Implement rewards distribution system
+
+- Build upon existing rewards system in `crypto/rewards.go`
+
+- Implement privacy-focused cryptocurrency features:
+
+- Anonymous transaction mechanism
+
+- Private wallet addresses
+
+- Encrypted transaction amounts
+
+
+- Add wallet management in client and validator
+
+- Design consensus mechanism for validators
+
+- Create blockchain storage and synchronization
+
+- Implement rewards distribution system
+
 
 2. **Validator Server Decoupling**
-   - Move Validator Server to standalone binary
-   - Implement gRPC API for client-validator communication
-   - Create validator discovery protocol
-   - Add validator reputation system
-   - Implement Byzantine fault tolerance
-   - Create validator node administration tools
-   - Add monitoring and health check endpoints
-   - Implement validator clustering for scalability
+
+- Move Validator Server to standalone binary
+
+- Implement gRPC API for client-validator communication
+
+- Create validator discovery protocol
+
+- Add validator reputation system
+
+- Implement Byzantine fault tolerance
+
+- Create validator node administration tools
+
+- Add monitoring and health check endpoints
+
+- Implement validator clustering for scalability
+
 
 3. **Security Enhancements**
-   - Add zero-knowledge proofs for file verification
-   - Implement secure multiparty computation for key sharing
-   - Add rate limiting and DoS protection
-   - Implement reputation-based peer selection
-   - Add file integrity verification using Merkle trees
-   - Implement secure validator communication protocols
+
+- Add zero-knowledge proofs for file verification
+
+- Implement secure multiparty computation for key sharing
+
+- Add rate limiting and DoS protection
+
+- Implement reputation-based peer selection
+
+- Add file integrity verification using Merkle trees
+
+- Implement secure validator communication protocols
+
 
 4. **Network Improvements**
-   - Add DHT-based peer discovery
-   - Implement NAT traversal
-   - Add bandwidth management
-   - Create chunk replication strategy
-   - Implement efficient peer selection
-   - Add network health monitoring
+
+- Add DHT-based peer discovery
+
+- Implement NAT traversal
+
+- Add bandwidth management
+
+- Create chunk replication strategy
+
+- Implement efficient peer selection
+
+- Add network health monitoring
+
+5. **Implement validator-assisted deduplication:**
+
+  - Clients send chunk hashes first
+
+  - Validators reject already-known chunks
+
+  - Clients only upload unique chunks
+
+  - Validators link reused chunks to the .zap manifest
