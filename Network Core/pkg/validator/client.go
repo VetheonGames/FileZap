@@ -1,26 +1,27 @@
 package validator
 
 import (
-    "bytes"
+    "context"
     "crypto/rand"
     "encoding/json"
     "fmt"
     "log"
-    "net/http"
     "time"
 
+    "github.com/VetheonGames/FileZap/NetworkCore/pkg/overlay"
     "github.com/VetheonGames/FileZap/NetworkCore/pkg/types"
 )
 
 // Client represents a validator network client
 type Client struct {
-    baseURL    string
-    httpClient     *http.Client
+    network        *overlay.NetworkAdapter
+    validatorID    string
     clientID       string
     connected      bool
-    address        string
     storageDir     string
     availableChunks []string
+    ctx            context.Context
+    cancel         context.CancelFunc
 }
 
 // ZapFileInfo represents detailed information about a .zap file
@@ -33,21 +34,30 @@ type ZapFileInfo struct {
 }
 
 // NewClient creates a new validator client
-func NewClient(baseURL string) *Client {
+func NewClient(validatorID string) (*Client, error) {
+    ctx, cancel := context.WithCancel(context.Background())
+    
+    network, err := overlay.NewNetworkAdapter(ctx)
+    if err != nil {
+        cancel()
+        return nil, fmt.Errorf("failed to create network adapter: %v", err)
+    }
+
     clientID := generateClientID()
     return &Client{
-        baseURL:    "http://" + baseURL,
-        httpClient: &http.Client{},
-        clientID:   clientID,
-        connected:  false,
-        address:    baseURL,
-    }
+        network:     network,
+        validatorID: validatorID,
+        clientID:    clientID,
+        connected:   false,
+        ctx:        ctx,
+        cancel:     cancel,
+    }, nil
 }
 
-// SetAddress updates the validator server address
-func (c *Client) SetAddress(address string) {
-    c.address = address
-    c.baseURL = "http://" + address
+// Close shuts down the client
+func (c *Client) Close() error {
+    c.cancel()
+    return c.network.Close()
 }
 
 // generateClientID creates a unique client identifier
@@ -61,24 +71,17 @@ func generateClientID() string {
 
 // RequestZapFile requests information about a .zap file from the validator
 func (c *Client) RequestZapFile(fileName string) (*types.FileInfo, error) {
-    req, err := http.NewRequest("GET", fmt.Sprintf("%s/file/info/%s", c.baseURL, fileName), nil)
+    resp, err := c.network.SendRequest(c.validatorID, "GET", fmt.Sprintf("/file/info/%s", fileName), nil)
     if err != nil {
-        return nil, fmt.Errorf("failed to create request: %v", err)
+        return nil, fmt.Errorf("failed to send request: %v", err)
     }
 
-    req.Header.Set("X-Client-ID", c.clientID)
-    resp, err := c.httpClient.Do(req)
-    if err != nil {
-        return nil, fmt.Errorf("failed to request file info: %v", err)
-    }
-    defer resp.Body.Close()
-
-    if resp.StatusCode != http.StatusOK {
+    if resp.StatusCode != 200 {
         return nil, fmt.Errorf("server returned status %d", resp.StatusCode)
     }
 
     var fileInfo types.FileInfo
-    if err := json.NewDecoder(resp.Body).Decode(&fileInfo); err != nil {
+    if err := json.Unmarshal(resp.Body, &fileInfo); err != nil {
         return nil, fmt.Errorf("failed to decode response: %v", err)
     }
 
@@ -88,10 +91,15 @@ func (c *Client) RequestZapFile(fileName string) (*types.FileInfo, error) {
 // MaintainConnection keeps the connection with the validator alive
 func (c *Client) MaintainConnection() {
     ticker := time.NewTicker(30 * time.Second)
-    for range ticker.C {
-        c.connected = c.IsConnected()
-        if !c.connected {
-            log.Printf("Lost connection to validator server at %s, attempting to reconnect...", c.address)
+    for {
+        select {
+        case <-c.ctx.Done():
+            return
+        case <-ticker.C:
+            c.connected = c.IsConnected()
+            if !c.connected {
+                log.Printf("Lost connection to validator, attempting to reconnect...")
+            }
         }
     }
 }
@@ -104,26 +112,12 @@ func (c *Client) UpdateAvailableZaps(files []types.FileInfo) error {
         Files: files,
     }
 
-    reqData, err := json.Marshal(data)
+    resp, err := c.network.SendRequest(c.validatorID, "POST", "/files/update", data)
     if err != nil {
-        return fmt.Errorf("failed to marshal files data: %v", err)
+        return fmt.Errorf("failed to send request: %v", err)
     }
 
-    req, err := http.NewRequest("POST", c.baseURL+"/files/update", bytes.NewBuffer(reqData))
-    if err != nil {
-        return fmt.Errorf("failed to create request: %v", err)
-    }
-
-    req.Header.Set("Content-Type", "application/json")
-    req.Header.Set("X-Client-ID", c.clientID)
-
-    resp, err := c.httpClient.Do(req)
-    if err != nil {
-        return fmt.Errorf("failed to update files: %v", err)
-    }
-    defer resp.Body.Close()
-
-    if resp.StatusCode != http.StatusOK {
+    if resp.StatusCode != 200 {
         return fmt.Errorf("server returned status %d", resp.StatusCode)
     }
 
@@ -132,12 +126,11 @@ func (c *Client) UpdateAvailableZaps(files []types.FileInfo) error {
 
 // IsConnected checks if the client can connect to the validator network
 func (c *Client) IsConnected() bool {
-    resp, err := c.httpClient.Get(c.baseURL + "/ping")
+    resp, err := c.network.SendRequest(c.validatorID, "GET", "/ping", nil)
     if err != nil {
         return false
     }
-    defer resp.Body.Close()
-    return resp.StatusCode == http.StatusOK
+    return resp.StatusCode == 200
 }
 
 // SetStorageDir sets the directory where chunks are stored
@@ -149,34 +142,18 @@ func (c *Client) SetStorageDir(dir string) {
 func (c *Client) RegisterAvailableChunks(chunks []string) error {
     data := struct {
         PeerID   string   `json:"peer_id"`
-        Address  string   `json:"address"`
         ChunkIDs []string `json:"chunk_ids"`
     }{
-        PeerID:   c.clientID,
-        Address:  c.address,
+        PeerID:   c.network.GetNodeID(),
         ChunkIDs: chunks,
     }
 
-    reqData, err := json.Marshal(data)
+    resp, err := c.network.SendRequest(c.validatorID, "POST", "/chunks/register", data)
     if err != nil {
-        return fmt.Errorf("failed to marshal chunks data: %v", err)
+        return fmt.Errorf("failed to send request: %v", err)
     }
 
-    req, err := http.NewRequest("POST", c.baseURL+"/chunks/register", bytes.NewBuffer(reqData))
-    if err != nil {
-        return fmt.Errorf("failed to create request: %v", err)
-    }
-
-    req.Header.Set("Content-Type", "application/json")
-    req.Header.Set("X-Client-ID", c.clientID)
-
-    resp, err := c.httpClient.Do(req)
-    if err != nil {
-        return fmt.Errorf("failed to register chunks: %v", err)
-    }
-    defer resp.Body.Close()
-
-    if resp.StatusCode != http.StatusOK {
+    if resp.StatusCode != 200 {
         return fmt.Errorf("server returned status %d", resp.StatusCode)
     }
 
@@ -186,24 +163,17 @@ func (c *Client) RegisterAvailableChunks(chunks []string) error {
 
 // GetChunkPeers requests a list of peers that have a specific chunk
 func (c *Client) GetChunkPeers(chunkID string) ([]types.PeerChunkInfo, error) {
-    req, err := http.NewRequest("GET", fmt.Sprintf("%s/chunks/peers/%s", c.baseURL, chunkID), nil)
+    resp, err := c.network.SendRequest(c.validatorID, "GET", fmt.Sprintf("/chunks/peers/%s", chunkID), nil)
     if err != nil {
-        return nil, fmt.Errorf("failed to create request: %v", err)
+        return nil, fmt.Errorf("failed to send request: %v", err)
     }
 
-    req.Header.Set("X-Client-ID", c.clientID)
-    resp, err := c.httpClient.Do(req)
-    if err != nil {
-        return nil, fmt.Errorf("failed to get chunk peers: %v", err)
-    }
-    defer resp.Body.Close()
-
-    if resp.StatusCode != http.StatusOK {
+    if resp.StatusCode != 200 {
         return nil, fmt.Errorf("server returned status %d", resp.StatusCode)
     }
 
     var peers []types.PeerChunkInfo
-    if err := json.NewDecoder(resp.Body).Decode(&peers); err != nil {
+    if err := json.Unmarshal(resp.Body, &peers); err != nil {
         return nil, fmt.Errorf("failed to decode response: %v", err)
     }
 
@@ -212,18 +182,12 @@ func (c *Client) GetChunkPeers(chunkID string) ([]types.PeerChunkInfo, error) {
 
 // UploadZapFile registers a file with the validator network
 func (c *Client) UploadZapFile(fileInfo types.FileInfo) error {
-    data, err := json.Marshal(fileInfo)
+    resp, err := c.network.SendRequest(c.validatorID, "POST", "/file/register", fileInfo)
     if err != nil {
-        return fmt.Errorf("failed to marshal file info: %v", err)
+        return fmt.Errorf("failed to send request: %v", err)
     }
 
-    resp, err := c.httpClient.Post(c.baseURL+"/file/register", "application/json", bytes.NewBuffer(data))
-    if err != nil {
-        return fmt.Errorf("failed to register file: %v", err)
-    }
-    defer resp.Body.Close()
-
-    if resp.StatusCode != http.StatusOK {
+    if resp.StatusCode != 200 {
         return fmt.Errorf("server returned status %d", resp.StatusCode)
     }
 
@@ -244,26 +208,12 @@ func (c *Client) RegisterEncryptionKey(fileID string, key string, publicKey []by
         ClientID:  c.clientID,
     }
 
-    reqData, err := json.Marshal(data)
+    resp, err := c.network.SendRequest(c.validatorID, "POST", "/key/register", data)
     if err != nil {
-        return fmt.Errorf("failed to marshal key data: %v", err)
+        return fmt.Errorf("failed to send request: %v", err)
     }
 
-    req, err := http.NewRequest("POST", c.baseURL+"/key/register", bytes.NewBuffer(reqData))
-    if err != nil {
-        return fmt.Errorf("failed to create request: %v", err)
-    }
-
-    req.Header.Set("Content-Type", "application/json")
-    req.Header.Set("X-Client-ID", c.clientID)
-
-    resp, err := c.httpClient.Do(req)
-    if err != nil {
-        return fmt.Errorf("failed to register key: %v", err)
-    }
-    defer resp.Body.Close()
-
-    if resp.StatusCode != http.StatusOK {
+    if resp.StatusCode != 200 {
         return fmt.Errorf("server returned status %d", resp.StatusCode)
     }
 
@@ -282,41 +232,26 @@ func (c *Client) RequestDecryptionKey(fileID string, publicKey []byte) (string, 
         PublicKey: publicKey,
     }
 
-    reqData, err := json.Marshal(data)
+    resp, err := c.network.SendRequest(c.validatorID, "POST", "/key/request", data)
     if err != nil {
-        return "", fmt.Errorf("failed to marshal request data: %v", err)
+        return "", fmt.Errorf("failed to send request: %v", err)
     }
 
-    req, err := http.NewRequest("POST", c.baseURL+"/key/request", bytes.NewBuffer(reqData))
-    if err != nil {
-        return "", fmt.Errorf("failed to create request: %v", err)
-    }
-
-    req.Header.Set("Content-Type", "application/json")
-    req.Header.Set("X-Client-ID", c.clientID)
-
-    resp, err := c.httpClient.Do(req)
-    if err != nil {
-        return "", fmt.Errorf("failed to request key: %v", err)
-    }
-    defer resp.Body.Close()
-
-    if resp.StatusCode != http.StatusOK {
-        var errResp struct {
-            Error string `json:"error"`
-        }
-        if err := json.NewDecoder(resp.Body).Decode(&errResp); err == nil && errResp.Error != "" {
-            return "", fmt.Errorf("server error: %s", errResp.Error)
-        }
+    if resp.StatusCode != 200 {
         return "", fmt.Errorf("server returned status %d", resp.StatusCode)
     }
 
     var response struct {
         Key string `json:"key"`
+        Error string `json:"error,omitempty"`
     }
 
-    if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+    if err := json.Unmarshal(resp.Body, &response); err != nil {
         return "", fmt.Errorf("failed to decode response: %v", err)
+    }
+
+    if response.Error != "" {
+        return "", fmt.Errorf("server error: %s", response.Error)
     }
 
     return response.Key, nil
