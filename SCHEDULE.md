@@ -15,7 +15,7 @@ Development updates will primarily occur on weekends, with the exception of ever
 | 3    | ✖️  | ✖️  | Scheduled offline weekend |
 | 4    | ✔️  | ✔️  | Regular contributions     |
 
-> **Next expected update**: _Saturday, June 1st, 2025_
+> **Next expected update**: _Sunday, June 2nd, 2025_
 
 ---
 
