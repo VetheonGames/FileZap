@@ -10,10 +10,10 @@ Development updates will primarily occur on weekends, with the exception of ever
 
 | Week | Sat | Sun | Notes                    |
 |------|-----|-----|--------------------------|
-| 1    | ✔️  | ✔️  | Regular contributions     |
-| 2    | ✔️  | ✔️  | Regular contributions     |
+| 1    | Prep  | ✔️  | Regular contributions     |
+| 2    | Prep  | ✔️  | Regular contributions     |
 | 3    | ✖️  | ✖️  | Scheduled offline weekend |
-| 4    | ✔️  | ✔️  | Regular contributions     |
+| 4    | Prep  | ✔️  | Regular contributions     |
 
 > **Next expected update**: _Sunday, June 2nd, 2025_
 
