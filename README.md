@@ -2,10 +2,10 @@
 
 > Note about the Developer: I am a new dad, and work full time. So I only work on coding projects on the weekend (when I have nothing else going on) please be patient with getting replies on IRC/Telegram/Issues!
 
-[![Libera Chat](https://img.shields.io/badge/Libera%20Chat-%23filezap-purple?style=flat&logo=libera-chat)](https://web.libera.chat/#filezap)
-[![Telegram](https://img.shields.io/badge/Telegram-Join-26A5E4?style=flat&logo=telegram)](https://t.me/Vetheon)
 
-**FileZap** is a decentralized, cryptographically secured file-splitting and sharing system. It lets users encrypt, divide, and distribute files into chunks—then reassemble them only with the appropriate authorization and after a proof-of-payment process. The system is designed to ensure that uploaded files are **impossible to lose** and **impossible to understand** until you’ve paid for and reconstructed them.
+
+FileZap is a decentralized, cryptographically secured file-splitting and sharing system. It lets users encrypt, divide, and distribute files into redundant chunks across a peer-to-peer network. The goal is to ensure that files uploaded to the network are never lost, even if individual peers go offline, and are impossible to understand without proper authorization.
+
 
 ---
 
@@ -13,100 +13,145 @@
 
 In a world of centralized control, surveillance, and unreliable data hosting, FileZap provides:
 
-- **Upload once, lose never**: Chunked files are redundantly stored across a peer network.  
-- **Privacy by design**: Files are encrypted at the chunk level and require quorum-approved access.  
-- **Trustless value exchange**: No decryption key is issued until a fee is paid and validated by the network.  
+**Upload once, lose never:** Chunked files are stored with intentional redundancy to survive peer churn.
 
-It’s like torrenting, but anonymous, cryptographically enforced, and economically incentivized.
+**Privacy by design:** Files are encrypted at the chunk level with no single peer having access to the full file.
+
+**Trustless sharing:** Zero-trust model ensures that reconstruction is only possible with proper manifests and quorum metadata.
+
+
+It’s like torrenting, but without leechers, missing seeds, or file decay.
+
 
 ---
 
-## ⚙️ How It Works
+## ⚙️ How It Works (Simplified Model)
 
-1. **Upload Phase**  
-   - User chunks a file and submits the '.zap' metadata file to the Validator network.  
-   - Validators check whether the file is already known (via a zero-knowledge method).  
-   - If it’s new, the Validators assign storage peers and issue a reward for contributing a new file.  
+1. **Upload Phase**
 
-2. **Distribution Phase**  
-   - The client sends each chunk to the assigned peers.  
-   - Validators monitor and require that all chunks be stored at least once before the file is 'accepted'.  
-   - No one can download the file until full replication is confirmed.  
+The user splits a file into encrypted chunks and creates a .zap manifest.
 
-3. **Availability Phase**  
-   - Once confirmed, the Validators allow download requests.  
-   - Users requesting files must submit payment to the Validator quorum.  
+The manifest describes chunk hashes, redundancy parameters, decryption keys, and peer locations.
 
-4. **Retrieval Phase**  
-   - Validators confirm payment and return a list of peer seeders for chunk download.  
-   - The client downloads the chunks and requests a decryption key.  
 
-5. **Decryption Phase**  
-   - Upon final payment validation, the Validator quorum issues a time-limited decryption key.  
-   - The client decrypts and reconstructs the file using the '.zap' file and downloaded chunks.  
 
-6. **Post-Retrieval Rule**  
-   - Once decrypted, the user cannot seed the file unless they delete their local copy.  
-   - This ensures that only zero-knowledge nodes seed the network.  
+2. **Distribution Phase**
+
+Chunks are sent to available peers using encrypted QUIC connections with NAT traversal.
+
+Redundant chunks are generated using replication and erasure coding then distributed across the swarm.
+
+
+
+3. **Swarm Coordination**
+
+Master nodes (small, easy-to-run servers) keep track of chunk distribution and swarm health.
+
+Master nodes help reassign chunks if peers disappear and maintain availability through passive health checks.
+
+
+
+4. **Retrieval Phase**
+
+Clients pull manifest files from master nodes or local storage.
+
+Chunks are fetched from the active swarm and reassembled locally with integrity checks.
+
+
+
+5. **Decryption Phase**
+
+Once chunks are retrieved, the client decrypts and reassembles the file using the manifest.
+
 
 ---
 
 ## 🧩 Project Overview
 
-| Component          | Description |
-|--------------------|-------------|
-| **Client**          | GUI app built with Fyne for file splitting, joining, and network interaction |
-| **Divider**         | Handles file encryption and chunking, produces '.zap' metadata |
-| **Reconstructor**   | Rebuilds files from chunks after integrity and payment validation |
-| **Network Core**    | Manages communication between clients, Validators, and peers |
-| **Validator Node**  | Coordinates file validation, storage quorum, consensus voting, and crypto-based payments |
-| **Seeder Node**     | Stores encrypted file chunks; receives payment for serving chunks to clients |
+### Component	Description
+
+**Client	GUI** - app built with Fyne for file splitting, joining, and network interaction
+Divider	Handles file encryption and chunking, produces .zap metadata
+
+**Reconstructor** -	Rebuilds files from chunks after verifying integrity
+
+**Network Core** -	Manages peer-to-peer transport using QUIC and UDP hole punching
+
+**Master Node** - lightweight node that coordinates metadata and ensures swarm health
+Seeder Node	Stores encrypted file chunks and serves them to requesting peers
+
+
 
 ---
 
 ## 🔐 Key Features
 
-- End-to-end file encryption (AES-based)  
-- Chunked file storage with redundancy  
-- Zero-trust, decentralized validation model  
-- Quorum-based payment and key issuance  
-- Enforced privacy and anti-leeching design  
-- Cross-platform GUI interface  
-- Fully scriptable build system for all OSes  
+End-to-end file encryption (AES-based)
+
+Chunked file storage with automatic redundancy
+
+Zero-trust, decentralized storage model
+
+Master-server-assisted swarm healing
+
+Cross-platform GUI interface
+
+Fully scriptable build system for all OSes
+
+
 
 ---
 
 ## ⚙️ Building It
 
-### Requirements
+Requirements
 
-- Go 1.21+  
-- Fyne UI dependencies  
-- (Windows only) MinGW-w64, GCC, and CGO_ENABLED=1  
+Go 1.21+
 
-### Build Scripts
+Fyne UI dependencies
 
-| OS      | Script         |
-|---------|----------------|
-| Windows | 'build.ps1'    |
-| Linux   | 'build.sh'     |
-| Mac     | 'build.sh'     |
+(Windows only) MinGW-w64, GCC, and CGO_ENABLED=1
 
-Example:  
-```bash  
-./build.sh  
+
+## Build Scripts (DEPRECATED)
+
+### OS	Script
+
+**Windows**	build.ps1
+**Linux**	build.sh
+**Mac**	build.sh
+
+
+Example:
+
+```bash
+./build.sh
 ```
+
 
 ---
 
 ## 🎮 Getting Started
 
-1. Launch the GUI client  
-2. Use the **Split File** tab:  
-   - Choose file, chunk size, and output directory  
-3. Use the **Join File** tab:  
-   - Select '.zap' file and reconstruct  
-4. Use the **Network** tab to register files or request downloads via Validators  
+1. **Launch the GUI client**
+
+
+2. **Use the Split File tab:**
+
+Choose file, chunk size, and output directory
+
+
+
+3. **Use the Join File tab:**
+
+Select .zap file and reconstruct
+
+
+
+4. **Use the Network tab to distribute or retrieve files via the peer swarm**
+
+
+
 
 ---
 
@@ -114,111 +159,95 @@ Example:
 
 We’re looking for:
 
-- 🧠 Cryptographers & protocol designers  
-- 🌍 Peer-to-peer & decentralized systems engineers  
-- 🧰 Go developers (especially familiar with Fyne, libp2p, or blockchain)  
-- 🧪 Testers and file chaos agents  
+**🧠 Protocol designers & systems thinkers**
 
-Start here:
+**🌍 P2P, NAT traversal, and transport layer engineers**
 
-- Check issues labeled 'help wanted'  
-- Read our 'CONTRIBUTING.md'  
-- Message me on [Telegram](https://t.me/Vetheon)
+**🧰 Go developers (especially with Fyne, QUIC, libp2p, or STUN/ICE experience)**
+
+**🧪 Testers and file chaos agents**
+
+
+### Start here:
+
+Check issues labeled 'help wanted'
+
+Read our 'CONTRIBUTING.md'
+
+Message me on Telegram
+
+
 
 ---
 
-## 📄 License
+📄 License
 
-[GPLv3](https://www.gnu.org/licenses/gpl-3.0.en.html#license-text)
+GPLv3 (See LICENSE file)
+
 
 ---
 
 ## 🌐 Project Status
 
-> FileZap is currently in **pre-alpha**. The client and chunking logic are functional, and a stubbed Validator implementation is being tested. Core crypto logic, networking, and distributed storage enforcement are being iterated on weekly. Early contributors can help shape protocol rules, crypto flows, and incentive mechanics.
+> FileZap is currently in very very early pre-alpha. The client and chunking logic are functional, and a rough networking stack is under active development. A simplified master-server model is being tested for swarm coordination, and NAT-punching + QUIC-based peer transport is being prototyped. Incentives and crypto requirements are being removed to be reintroduced later as an optionak plugin — for now, just pure distributed file storage.
 
-> The GUI is till in very rough shape, and the logic is NOT yet properly integrated into it. Validators do not yet do anything, and the Validator Server has yet to be de-coupled from the main program. Eventually Validators will run their own program. In it's current state the network is NON-FUNCTIONAL. So do not expect to be able to distribute files, or download files as of yet.
+
+
+> The GUI is still in rough shape, and the logic is not yet fully integrated. Chunk storage and retrieval are not functional yet, and the master node logic is still part of the main app binary. Eventually, master nodes will be standalone. In its current state, the network is non-functional, and FileZap should not be used for real file distribution or retrieval at this time.
+
+
+
+
+---
 
 ## TODO
 
-TODO
+1. **Swarm Redundancy System**
 
-1. **Cryptocurrency Implementation**
+Integrate chunk replication and/or Reed–Solomon encoding
 
-- Build upon existing rewards system in `crypto/rewards.go`
+Build chunk health monitoring into master nodes
 
-- Implement privacy-focused cryptocurrency features:
-
-- Anonymous transaction mechanism
-
-- Private wallet addresses
-
-- Encrypted transaction amounts
+Implement swarm-wide chunk repair on peer dropoff
 
 
-- Add wallet management in client and validator
 
-- Design consensus mechanism for validators
+2. **Master Server Implementation**
 
-- Create blockchain storage and synchronization
+Split master coordination logic into standalone binary
 
-- Implement rewards distribution system
+Add REST or gRPC API for peer coordination
 
+Support peer health tracking and manifest registry
 
-2. **Validator Server Decoupling**
-
-- Move Validator Server to standalone binary
-
-- Implement gRPC API for client-validator communication
-
-- Create validator discovery protocol
-
-- Add validator reputation system
-
-- Implement Byzantine fault tolerance
-
-- Create validator node administration tools
-
-- Add monitoring and health check endpoints
-
-- Implement validator clustering for scalability
+Build basic federation model for multi-master support
 
 
-3. **Security Enhancements**
 
-- Add zero-knowledge proofs for file verification
+3. **Transport Enhancements**
 
-- Implement secure multiparty computation for key sharing
+Use QUIC for encrypted peer-to-peer chunk transfer
 
-- Add rate limiting and DoS protection
+Implement NAT traversal via UDP hole punching
 
-- Implement reputation-based peer selection
-
-- Add file integrity verification using Merkle trees
-
-- Implement secure validator communication protocols
+Add relay fallback for peers behind symmetric NAT
 
 
-4. **Network Improvements**
 
-- Add DHT-based peer discovery
+4. **File Integrity & Security**
 
-- Implement NAT traversal
+Integrate Merkle tree-based chunk validation
 
-- Add bandwidth management
+Improve encryption and key handling
 
-- Create chunk replication strategy
+Add support for manifest signing and tamper detection
 
-- Implement efficient peer selection
 
-- Add network health monitoring
 
-5. **Implement validator-assisted deduplication:**
+5. **GUI Enhancements**
 
-  - Clients send chunk hashes first
+Build in swarm health and file availability indicators
 
-  - Validators reject already-known chunks
+Integrate master server discovery and selection
 
-  - Clients only upload unique chunks
-
-  - Validators link reused chunks to the .zap manifest
+Polish split/join UX and link directly to peeparameters
