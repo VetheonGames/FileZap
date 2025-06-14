@@ -1,0 +1,23 @@
+run:
+  timeout: 2m
+linters:
+  enable:
+    - unused
+    - errcheck
+    - goconst
+    - govet
+    - gosimple
+    - revive
+    - typecheck
+    - depguard
+    - staticcheck
+    - unused
+    - gocritic
+    - gofmt
+    - goimports
+    - misspell
+    - depguard
+    - ineffassign
+    - gocyclo
+  disable:
+    - bodyclose

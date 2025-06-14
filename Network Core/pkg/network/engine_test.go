@@ -1,36 +1,36 @@
-    package network
+package network
 
 import (
-"context"
-"testing"
-"time"
+	"context"
+	"testing"
+	"time"
 
-"github.com/libp2p/go-libp2p"
-"github.com/libp2p/go-libp2p/core/network"
-"github.com/libp2p/go-libp2p/core/peer"
-"github.com/multiformats/go-multiaddr"
+	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestNewNetworkEngine(t *testing.T) {
-ctx := context.Background()
+	ctx := context.Background()
 
-// Create a bootstrap node for testing
-bootstrapNode, err := libp2p.New(
-    libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0", "/ip4/127.0.0.1/udp/0/quic"),
-)
-require.NoError(t, err)
-defer bootstrapNode.Close()
+	// Create a bootstrap node for testing
+	bootstrapNode, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0", "/ip4/127.0.0.1/udp/0/quic"),
+	)
+	require.NoError(t, err)
+	defer bootstrapNode.Close()
 
-engine, err := NewNetworkEngine(ctx)
-require.NoError(t, err)
+	engine, err := NewNetworkEngine(ctx)
+	require.NoError(t, err)
 	defer engine.Close()
 
 	// Verify both nodes were created
 	require.NotNil(t, engine.transportNode)
 	require.NotNil(t, engine.metadataNode)
-	
+
 	// Verify components are initialized
 	require.NotNil(t, engine.manifests)
 	require.NotNil(t, engine.chunkStore)
@@ -45,20 +45,20 @@ require.NoError(t, err)
 
 func TestNetworkEngineConnect(t *testing.T) {
 	ctx := context.Background()
-	
+
 	// Create two engines
-// Create bootstrap node
-bootstrapNode, err := libp2p.New(
-    libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0", "/ip4/127.0.0.1/udp/0/quic"),
-)
-require.NoError(t, err)
-defer bootstrapNode.Close()
+	// Create bootstrap node
+	bootstrapNode, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0", "/ip4/127.0.0.1/udp/0/quic"),
+	)
+	require.NoError(t, err)
+	defer bootstrapNode.Close()
 
-engine1, err := NewNetworkEngine(ctx)
-require.NoError(t, err)
-defer engine1.Close()
+	engine1, err := NewNetworkEngine(ctx)
+	require.NoError(t, err)
+	defer engine1.Close()
 
-engine2, err := NewNetworkEngine(ctx)
+	engine2, err := NewNetworkEngine(ctx)
 	require.NoError(t, err)
 	defer engine2.Close()
 
@@ -77,27 +77,27 @@ engine2, err := NewNetworkEngine(ctx)
 	require.NoError(t, err)
 
 	// Verify connection on both networks
-require.Eventually(t, func() bool {
-return engine1.transportNode.host.Network().Connectedness(engine2.GetTransportHost().ID()) == network.Connected
-}, 5*time.Second, 100*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return engine1.transportNode.host.Network().Connectedness(engine2.GetTransportHost().ID()) == network.Connected
+	}, 5*time.Second, 100*time.Millisecond)
 
-require.Eventually(t, func() bool {
-return engine1.metadataNode.host.Network().Connectedness(engine2.GetMetadataHost().ID()) == network.Connected
-}, 5*time.Second, 100*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return engine1.metadataNode.host.Network().Connectedness(engine2.GetMetadataHost().ID()) == network.Connected
+	}, 5*time.Second, 100*time.Millisecond)
 }
 
 func TestZapFileOperations(t *testing.T) {
-ctx := context.Background()
+	ctx := context.Background()
 
-// Create bootstrap node
-bootstrapNode, err := libp2p.New(
-    libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0", "/ip4/127.0.0.1/udp/0/quic"),
-)
-require.NoError(t, err)
-defer bootstrapNode.Close()
+	// Create bootstrap node
+	bootstrapNode, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0", "/ip4/127.0.0.1/udp/0/quic"),
+	)
+	require.NoError(t, err)
+	defer bootstrapNode.Close()
 
-// Create two engines
-engine1, err := NewNetworkEngine(ctx)
+	// Create two engines
+	engine1, err := NewNetworkEngine(ctx)
 	require.NoError(t, err)
 	defer engine1.Close()
 
@@ -119,11 +119,11 @@ engine1, err := NewNetworkEngine(ctx)
 
 	// Create test data
 	testManifest := &ManifestInfo{
-		Name:           "test.zap",
-		ChunkHashes:    []string{"hash1", "hash2"},
+		Name:            "test.zap",
+		ChunkHashes:     []string{"hash1", "hash2"},
 		ReplicationGoal: DefaultReplicationGoal,
-		Owner:          engine1.GetTransportHost().ID(),
-		Size:           1024,
+		Owner:           engine1.GetTransportHost().ID(),
+		Size:            1024,
 	}
 
 	testChunks := map[string][]byte{
@@ -146,7 +146,7 @@ engine1, err := NewNetworkEngine(ctx)
 	assert.Equal(t, testManifest.ChunkHashes, retrievedManifest.ChunkHashes)
 	assert.Equal(t, testManifest.Size, retrievedManifest.Size)
 	assert.Equal(t, len(testChunks), len(retrievedChunks))
-	
+
 	for hash, data := range testChunks {
 		retrievedData, exists := retrievedChunks[hash]
 		assert.True(t, exists)

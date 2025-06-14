@@ -1,12 +1,12 @@
 package network
 
 import (
-"bytes"
-"context"
-"crypto/sha256"
-"encoding/json"
-"fmt"
-"time"
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"time"
 
 	"github.com/ipfs/go-cid"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
@@ -155,94 +155,104 @@ func (r *ManifestReplicator) Start(ctx context.Context) {
 
 // checkReplication ensures all manifests meet their replication goals
 func (r *ManifestReplicator) checkReplication() {
-    ctx := context.Background()
+	ctx := context.Background()
 
-    // Get all manifests we're responsible for storing
-    for _, manifest := range r.manifests.store {
-        // Get the XOR distance between our node ID and the manifest key
-        manifestKey := getDHTKey(manifest.Name)
-        localDist := xorDistance(r.manifests.localNode.String(), manifestKey)
+	// Get all manifests we're responsible for storing
+	for _, manifest := range r.manifests.store {
+		// Get the XOR distance between our node ID and the manifest key
+		manifestKey := getDHTKey(manifest.Name)
+		localDist := xorDistance(r.manifests.localNode.String(), manifestKey)
 
-        // Get closest peers to this manifest
-        peers, err := r.dht.GetClosestPeers(ctx, manifestKey)
-        if err != nil {
-            continue
-        }
+		// Get closest peers to this manifest
+		peers, err := r.dht.GetClosestPeers(ctx, manifestKey)
+		if err != nil {
+			continue
+		}
 
-        // Sort peers by XOR distance to manifest
-        peerDistances := make(map[peer.ID][]byte)
-        for _, p := range peers {
-            dist := xorDistance(p.String(), manifestKey)
-            peerDistances[p] = dist
-        }
+		// Sort peers by XOR distance to manifest
+		peerDistances := make(map[peer.ID][]byte)
+		for _, p := range peers {
+			dist := xorDistance(p.String(), manifestKey)
+			peerDistances[p] = dist
+		}
 
-        // Check if we're one of the N closest nodes
-        closerPeers := 0
-        for _, p := range peers {
-            if bytes.Compare(peerDistances[p], localDist) < 0 {
-                closerPeers++
-            }
-        }
+		// Check if we're one of the N closest nodes
+		closerPeers := 0
+		for _, p := range peers {
+			if bytes.Compare(peerDistances[p], localDist) < 0 {
+				closerPeers++
+			}
+		}
 
-        // If we're one of the N closest nodes, ensure we have the manifest
-        if closerPeers < manifest.ReplicationGoal {
-            // We should store this manifest
-            if _, ok := r.manifests.store[manifest.Name]; !ok {
-                // Get manifest from another peer
-                data, err := r.dht.GetValue(ctx, manifestKey)
-                if err != nil {
-                    continue
-                }
+		// If we're one of the N closest nodes, ensure we have the manifest
+		if closerPeers < manifest.ReplicationGoal {
+			// We should store this manifest
+			if _, ok := r.manifests.store[manifest.Name]; !ok {
+				// Get manifest from another peer
+				data, err := r.dht.GetValue(ctx, manifestKey)
+				if err != nil {
+					continue
+				}
 
-                var fetchedManifest ManifestInfo
-                if err := json.Unmarshal(data, &fetchedManifest); err != nil {
-                    continue
-                }
+				var fetchedManifest ManifestInfo
+				if err := json.Unmarshal(data, &fetchedManifest); err != nil {
+					continue
+				}
 
-                r.manifests.store[manifest.Name] = &fetchedManifest
-            }
+				r.manifests.store[manifest.Name] = &fetchedManifest
+			}
 
-            // Announce that we're providing this manifest
-            mhash, _ := mh.Sum([]byte(manifestKey), mh.SHA2_256, -1)
-            manifestCID := cid.NewCidV1(cid.Raw, mhash)
-            r.dht.Provide(ctx, manifestCID, true)
-        }
+			// Announce that we're providing this manifest
+			mhash, err := mh.Sum([]byte(manifestKey), mh.SHA2_256, -1)
+			if err != nil {
+				continue
+			}
+			manifestCID := cid.NewCidV1(cid.Raw, mhash)
+			if err := r.dht.Provide(ctx, manifestCID, true); err != nil {
+				continue
+			}
+		}
 
-        // Health check for all replicas
-        manifestHash, _ := mh.Sum([]byte(manifestKey), mh.SHA2_256, -1)
-        manifestCID := cid.NewCidV1(cid.Raw, manifestHash)
-        providers, err := r.dht.FindProviders(ctx, manifestCID)
-        if err != nil {
-            continue
-        }
+		// Health check for all replicas
+		manifestHash, err := mh.Sum([]byte(manifestKey), mh.SHA2_256, -1)
+		if err != nil {
+			continue
+		}
+		manifestCID := cid.NewCidV1(cid.Raw, manifestHash)
+		providers, err := r.dht.FindProviders(ctx, manifestCID)
+		if err != nil {
+			continue
+		}
 
-        // If insufficient providers found, publish manifest again
-        if len(providers) < manifest.ReplicationGoal {
-            data, err := json.Marshal(manifest)
-            if err != nil {
-                continue
-            }
-            r.dht.PutValue(ctx, manifestKey, data)
-        }
-    }
+		// If insufficient providers found, publish manifest again
+		if len(providers) < manifest.ReplicationGoal {
+			data, err := json.Marshal(manifest)
+			if err != nil {
+				continue
+			}
+			if err := r.dht.PutValue(ctx, manifestKey, data); err != nil {
+				continue
+			}
+		}
+	}
 }
 
 // xorDistance calculates the XOR distance between two strings
 func xorDistance(a, b string) []byte {
-    aBytes := []byte(a)
-    bBytes := []byte(b)
-    length := len(aBytes)
-    if len(bBytes) < length {
-        length = len(bBytes)
-    }
-    result := make([]byte, length)
-    for i := 0; i < length; i++ {
-        result[i] = aBytes[i] ^ bBytes[i]
-    }
-    return result
+	aBytes := []byte(a)
+	bBytes := []byte(b)
+	length := len(aBytes)
+	if len(bBytes) < length {
+		length = len(bBytes)
+	}
+	result := make([]byte, length)
+	for i := 0; i < length; i++ {
+		result[i] = aBytes[i] ^ bBytes[i]
+	}
+	return result
 }
 
 // getDHTKey returns the DHT key for a manifest name
 func getDHTKey(name string) string {
-    return fmt.Sprintf("/filezap/manifest/%x", sha256.Sum256([]byte(name)))
+	return fmt.Sprintf("/filezap/manifest/%x", sha256.Sum256([]byte(name)))
 }

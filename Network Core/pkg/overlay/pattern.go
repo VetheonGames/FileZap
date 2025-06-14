@@ -1,18 +1,35 @@
 package overlay
 
-import (
-    "regexp"
-    "strings"
-)
+import "strings"
 
-// patternToRegex converts a URL pattern to a regular expression
-func patternToRegex(pattern string) *regexp.Regexp {
-    // Escape special regex characters
-    pattern = regexp.QuoteMeta(pattern)
+// isPatternMatch checks if a path matches a pattern
+func isPatternMatch(pattern, path string) bool {
+    patternParts := strings.Split(pattern, "/")
+    pathParts := strings.Split(path, "/")
 
-    // Replace path parameters with regex groups
-    pattern = strings.ReplaceAll(pattern, "/\\{[^}]+\\}", "/([^/]+)")
-    pattern = "^" + pattern + "$"
+    if len(patternParts) != len(pathParts) {
+        return false
+    }
 
-    return regexp.MustCompile(pattern)
+    for i := 0; i < len(patternParts); i++ {
+        if patternParts[i] == "" && pathParts[i] == "" {
+            continue
+        }
+        if patternParts[i] == "" || pathParts[i] == "" {
+            return false
+        }
+        if !isPartMatch(patternParts[i], pathParts[i]) {
+            return false
+        }
+    }
+
+    return true
+}
+
+// isPartMatch checks if a path part matches a pattern part
+func isPartMatch(pattern, part string) bool {
+    if strings.HasPrefix(pattern, "{") && strings.HasSuffix(pattern, "}") {
+        return true
+    }
+    return pattern == part
 }

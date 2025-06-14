@@ -4,36 +4,32 @@ import (
     "context"
     "encoding/json"
     "fmt"
-    "net/http"
     "strings"
 )
 
-// RequestHandler is a function that handles network requests
-type RequestHandler func(r *Request) (*Response, error)
-
-// ServerAdapter adapts the overlay network for server use
+// ServerAdapter wraps the overlay network for HTTP-like server functionality
 type ServerAdapter struct {
-    node     *OverlayNode
-    handlers map[string]RequestHandler
-    ctx      context.Context
-    cancel   context.CancelFunc
+    node    *Node
+    ctx     context.Context
+    routes  map[string]map[string]HandlerFunc // method -> path -> handler
+    msgChan chan *Message
 }
+
+// HandlerFunc handles HTTP-like requests over the overlay network
+type HandlerFunc func(r *Request) (*Response, error)
 
 // NewServerAdapter creates a new server adapter
 func NewServerAdapter(ctx context.Context) (*ServerAdapter, error) {
-    ctx, cancel := context.WithCancel(ctx)
-    
-    node, err := NewOverlayNode(ctx)
+    node, err := NewNode(ctx)
     if err != nil {
-        cancel()
         return nil, fmt.Errorf("failed to create overlay node: %v", err)
     }
 
     adapter := &ServerAdapter{
-        node:     node,
-        handlers: make(map[string]RequestHandler),
-        ctx:      ctx,
-        cancel:   cancel,
+        node:    node,
+        ctx:     ctx,
+        routes:  make(map[string]map[string]HandlerFunc),
+        msgChan: make(chan *Message, 100),
     }
 
     // Set up message handler
@@ -42,96 +38,97 @@ func NewServerAdapter(ctx context.Context) (*ServerAdapter, error) {
     return adapter, nil
 }
 
+// HandleFunc registers a handler for a specific method and path
+func (s *ServerAdapter) HandleFunc(method string, path string, handler HandlerFunc) {
+    if s.routes[method] == nil {
+        s.routes[method] = make(map[string]HandlerFunc)
+    }
+    s.routes[method][path] = handler
+}
+
 // HandleMessage implements MessageHandler
 func (s *ServerAdapter) HandleMessage(msg *Message) error {
-    if msg.Type != MsgTypeValidatorRequest {
-        return fmt.Errorf("unexpected message type: %s", msg.Type)
-    }
-
-    var req Request
-    if err := json.Unmarshal(msg.Payload, &req); err != nil {
-        return fmt.Errorf("failed to unmarshal request: %v", err)
-    }
-
-    // Find handler for path
-    handler := s.findHandler(req.Method, req.Path)
-    if handler == nil {
-        // Send 404 response
-        resp := &Response{
-            StatusCode: http.StatusNotFound,
-            Body:      []byte(`{"error":"not found"}`),
+    if msg.Type == MsgTypeValidatorRequest {
+        var req Request
+        if err := json.Unmarshal(msg.Payload, &req); err != nil {
+            return fmt.Errorf("failed to unmarshal request: %v", err)
         }
-        return s.sendResponse(msg.FromID, resp)
+
+        // Find handler
+        handlers, ok := s.routes[req.Method]
+        if !ok {
+            return s.sendError(msg.FromID, 405, "method not allowed")
+        }
+
+        handler, pattern := s.matchRoute(handlers, req.Path)
+        if handler == nil {
+            return s.sendError(msg.FromID, 404, "not found")
+        }
+
+        // Update request with pattern info
+        req.pattern = pattern
+
+        // Call handler
+        resp, err := handler(&req)
+        if err != nil {
+            return s.sendError(msg.FromID, 500, err.Error())
+        }
+
+        // Send response
+        respData, err := json.Marshal(resp)
+        if err != nil {
+            return s.sendError(msg.FromID, 500, "failed to marshal response")
+        }
+
+        if err := s.node.SendMessage(msg.FromID, MsgTypeValidatorResponse, respData); err != nil {
+            return fmt.Errorf("failed to send response: %v", err)
+        }
+
+        return nil
     }
 
-    // Handle request
-    resp, err := handler(&req)
+    // Forward responses to channel
+    s.msgChan <- msg
+    return nil
+}
+
+func (s *ServerAdapter) sendError(peerID string, status int, message string) error {
+    resp := &Response{
+        StatusCode: status,
+        Body:       []byte(fmt.Sprintf(`{"error":"%s"}`, message)),
+    }
+
+    respData, err := json.Marshal(resp)
     if err != nil {
-        // Send error response
-        resp = &Response{
-            StatusCode: http.StatusInternalServerError,
-            Body:      []byte(fmt.Sprintf(`{"error":"%s"}`, err.Error())),
+        return fmt.Errorf("failed to marshal error response: %v", err)
+    }
+
+    return s.node.SendMessage(peerID, MsgTypeValidatorResponse, respData)
+}
+
+func (s *ServerAdapter) matchRoute(routes map[string]HandlerFunc, path string) (HandlerFunc, string) {
+    // Try exact match first
+    if handler, ok := routes[path]; ok {
+        return handler, path
+    }
+
+    // Try pattern matching
+    for pattern, handler := range routes {
+        if isPatternMatch(pattern, path) {
+            return handler, pattern
         }
     }
 
-    return s.sendResponse(msg.FromID, resp)
+    return nil, ""
 }
 
-// HandleFunc registers a handler for a specific path pattern
-func (s *ServerAdapter) HandleFunc(method string, pattern string, handler RequestHandler) {
-    key := method + " " + pattern
-    s.handlers[key] = handler
-}
-
-// GetNodeID returns the overlay node ID
+// GetNodeID returns the node's ID
 func (s *ServerAdapter) GetNodeID() string {
     return s.node.nodeID
 }
 
 // Close shuts down the server adapter
 func (s *ServerAdapter) Close() error {
-    s.cancel()
+    close(s.msgChan)
     return s.node.Close()
-}
-
-// Internal methods
-
-func (s *ServerAdapter) sendResponse(toID string, resp *Response) error {
-    respData, err := json.Marshal(resp)
-    if err != nil {
-        return fmt.Errorf("failed to marshal response: %v", err)
-    }
-
-    if err := s.node.SendMessage(toID, MsgTypeValidatorResponse, respData); err != nil {
-        return fmt.Errorf("failed to send response: %v", err)
-    }
-
-    return nil
-}
-
-func (s *ServerAdapter) findHandler(method string, path string) RequestHandler {
-    // Check for exact match first
-    if handler := s.handlers[method+" "+path]; handler != nil {
-        return handler
-    }
-
-    // Check for pattern matches
-    for pattern, handler := range s.handlers {
-        parts := strings.Split(pattern, " ")
-        if len(parts) != 2 {
-            continue
-        }
-
-        if parts[0] != method {
-            continue
-        }
-
-        // Convert pattern to regex
-        regex := patternToRegex(parts[1])
-        if regex.MatchString(path) {
-            return handler
-        }
-    }
-
-    return nil
 }

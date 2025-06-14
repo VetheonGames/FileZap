@@ -12,30 +12,30 @@ import (
 
 // FileMetadata represents the metadata stored in a .zap file
 type FileMetadata struct {
-    ID            string          `json:"id"`
-    OriginalName  string          `json:"original_name"`
-    ChunkCount    int            `json:"chunk_count"`
-    TotalSize     int64          `json:"total_size"`
-    EncryptionKey string         `json:"encryption_key,omitempty"`
-    Chunks        []ChunkMetadata `json:"chunks"`
+	ID            string          `json:"id"`
+	OriginalName  string          `json:"original_name"`
+	ChunkCount    int             `json:"chunk_count"`
+	TotalSize     int64           `json:"total_size"`
+	EncryptionKey string          `json:"encryption_key,omitempty"`
+	Chunks        []ChunkMetadata `json:"chunks"`
 }
 
 // ChunkMetadata represents metadata for a single encrypted chunk
 type ChunkMetadata struct {
-    Index         int    `json:"index"`           // Index of the chunk in the original file
-    Hash          string `json:"hash"`            // Hash of the original chunk data
-    Size          int64  `json:"size"`            // Size of the original chunk
-    EncryptedHash string `json:"encrypted_hash"`  // Hash of the encrypted chunk data
+	Index         int    `json:"index"`          // Index of the chunk in the original file
+	Hash          string `json:"hash"`           // Hash of the original chunk data
+	Size          int64  `json:"size"`           // Size of the original chunk
+	EncryptedHash string `json:"encrypted_hash"` // Hash of the encrypted chunk data
 }
 
 // UpdateEncryptedHash updates the encrypted hash for a chunk
 func (c *ChunkMetadata) UpdateEncryptedHash(encryptedData []byte) error {
-    hash := make([]byte, 32)
-    if _, err := io.ReadFull(rand.Reader, hash); err != nil {
-        return fmt.Errorf("failed to generate encrypted hash: %v", err)
-    }
-    c.EncryptedHash = hex.EncodeToString(hash)
-    return nil
+	hash := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, hash); err != nil {
+		return fmt.Errorf("failed to generate encrypted hash: %v", err)
+	}
+	c.EncryptedHash = hex.EncodeToString(hash)
+	return nil
 }
 
 // GenerateID creates a unique ID for a .zap file
@@ -75,44 +75,44 @@ func ReadZapFile(zapPath string) (*FileMetadata, error) {
 
 // ValidateChunks verifies that all chunks exist and have correct hashes
 func ValidateChunks(metadata *FileMetadata, chunksDir string) error {
-    // Create chunks directory if it doesn't exist
-    if err := os.MkdirAll(chunksDir, 0755); err != nil {
-        return fmt.Errorf("failed to create chunks directory: %v", err)
-    }
+	// Create chunks directory if it doesn't exist
+	if err := os.MkdirAll(chunksDir, 0755); err != nil {
+		return fmt.Errorf("failed to create chunks directory: %v", err)
+	}
 
-    for _, chunk := range metadata.Chunks {
-        chunkPath := filepath.Join(chunksDir, chunk.EncryptedHash)
-        
-        // Check if chunk exists
-        if _, err := os.Stat(chunkPath); err != nil {
-            if os.IsNotExist(err) {
-                return fmt.Errorf("chunk file missing: %s", chunk.EncryptedHash)
-            }
-            return fmt.Errorf("failed to check chunk file: %v", err)
-        }
+	for _, chunk := range metadata.Chunks {
+		chunkPath := filepath.Join(chunksDir, chunk.EncryptedHash)
 
-        // Read chunk data
-        data, err := os.ReadFile(chunkPath)
-        if err != nil {
-            return fmt.Errorf("failed to read chunk %s: %v", chunk.EncryptedHash, err)
-        }
+		// Check if chunk exists
+		if _, err := os.Stat(chunkPath); err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("chunk file missing: %s", chunk.EncryptedHash)
+			}
+			return fmt.Errorf("failed to check chunk file: %v", err)
+		}
 
-        // Verify chunk size
-        if int64(len(data)) != chunk.Size {
-            return fmt.Errorf("chunk %s size mismatch: expected %d, got %d", 
-                chunk.EncryptedHash, chunk.Size, len(data))
-        }
-    }
-    return nil
+		// Read chunk data
+		data, err := os.ReadFile(chunkPath)
+		if err != nil {
+			return fmt.Errorf("failed to read chunk %s: %v", chunk.EncryptedHash, err)
+		}
+
+		// Verify chunk size
+		if int64(len(data)) != chunk.Size {
+			return fmt.Errorf("chunk %s size mismatch: expected %d, got %d",
+				chunk.EncryptedHash, chunk.Size, len(data))
+		}
+	}
+	return nil
 }
 
 // CleanupChunks removes all chunk files
 func CleanupChunks(metadata *FileMetadata, chunksDir string) error {
-    for _, chunk := range metadata.Chunks {
-        chunkPath := filepath.Join(chunksDir, chunk.EncryptedHash)
-        if err := os.Remove(chunkPath); err != nil && !os.IsNotExist(err) {
-            return fmt.Errorf("failed to remove chunk %s: %v", chunk.EncryptedHash, err)
-        }
-    }
-    return nil
+	for _, chunk := range metadata.Chunks {
+		chunkPath := filepath.Join(chunksDir, chunk.EncryptedHash)
+		if err := os.Remove(chunkPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove chunk %s: %v", chunk.EncryptedHash, err)
+		}
+	}
+	return nil
 }
