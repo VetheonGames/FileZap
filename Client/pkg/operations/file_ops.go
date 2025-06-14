@@ -1,320 +1,191 @@
 package operations
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"strconv"
-	"time"
+    "crypto/sha256"
+    "encoding/hex"
+    "encoding/json"
+    "fmt"
+    "io"
+    "os"
+    "path/filepath"
+    "strconv"
+    "time"
 
-	"github.com/VetheonGames/FileZap/Divider/pkg/chunking"
-	"github.com/VetheonGames/FileZap/Divider/pkg/encryption"
-	"github.com/VetheonGames/FileZap/Divider/pkg/zap"
-	"github.com/VetheonGames/FileZap/NetworkCore/pkg/types"
-	"github.com/VetheonGames/FileZap/NetworkCore/pkg/validator"
+    "github.com/VetheonGames/FileZap/Client/pkg/server"
 )
+
+const defaultBufferSize = 32 * 1024 // 32KB buffer
 
 // FileOperations handles file splitting and joining operations
 type FileOperations struct {
-	client *validator.Client
-	config *types.ChunkStorageConfig
+    server *server.IntegratedServer
 }
 
 // NewFileOperations creates a new FileOperations instance
-func NewFileOperations(client *validator.Client, storageDir string) *FileOperations {
-	if storageDir == "" {
-		storageDir = filepath.Join(os.TempDir(), "filezap", "chunks")
-	}
-
-	return &FileOperations{
-		client: client,
-		config: &types.ChunkStorageConfig{
-			StorageDir:     storageDir,
-			MaxStorageSize: 10 * 1024 * 1024 * 1024, // 10GB default
-			AutoCleanup:    true,
-		},
-	}
+func NewFileOperations(server *server.IntegratedServer) *FileOperations {
+    return &FileOperations{
+        server: server,
+    }
 }
 
-// SetStorageConfig updates the chunk storage configuration
-func (f *FileOperations) SetStorageConfig(config *types.ChunkStorageConfig) {
-	f.config = config
+// SplitFile splits a file into chunks and generates a .zap file
+func (f *FileOperations) SplitFile(inputPath, outputPath, chunkSizeStr string) error {
+    // Parse chunk size
+    chunkSize, err := strconv.ParseInt(chunkSizeStr, 10, 64)
+    if err != nil {
+        return fmt.Errorf("invalid chunk size: %v", err)
+    }
+
+    // Create output directory if it doesn't exist
+    if err := os.MkdirAll(outputPath, 0755); err != nil {
+        return fmt.Errorf("failed to create output directory: %v", err)
+    }
+
+    // Open input file
+    file, err := os.Open(inputPath)
+    if err != nil {
+        return fmt.Errorf("failed to open input file: %v", err)
+    }
+    defer file.Close()
+
+    // Get file info
+    fileInfo, err := file.Stat()
+    if err != nil {
+        return fmt.Errorf("failed to get file info: %v", err)
+    }
+
+    // Create FileInfo structure
+    info := &server.FileInfo{
+        Name:      fileInfo.Name(),
+        ID:        generateFileID(inputPath),
+        ChunkDir:  outputPath,
+        TotalSize: fileInfo.Size(),
+    }
+
+    // Create buffer for reading
+    buffer := make([]byte, chunkSize)
+    chunkIndex := 0
+
+    for {
+        n, err := file.Read(buffer)
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            return fmt.Errorf("error reading file: %v", err)
+        }
+
+        // Generate chunk ID
+        chunkData := buffer[:n]
+        chunkID := generateChunkID(chunkData)
+
+        // Save chunk to file
+        chunkPath := filepath.Join(outputPath, chunkID)
+        if err := os.WriteFile(chunkPath, chunkData, 0644); err != nil {
+            return fmt.Errorf("failed to write chunk %s: %v", chunkID, err)
+        }
+
+        // Add chunk info
+        info.Chunks = append(info.Chunks, server.ChunkInfo{
+            ID:    chunkID,
+            Size:  int64(n),
+            Hash:  chunkID,
+            Index: chunkIndex,
+        })
+
+        chunkIndex++
+    }
+
+    // Register with server
+    if err := f.server.RegisterFile(info); err != nil {
+        return fmt.Errorf("failed to register file: %v", err)
+    }
+
+    // Save manifest
+    manifestPath := filepath.Join(outputPath, info.Name+".zap")
+    if err := saveManifest(manifestPath, info); err != nil {
+        return fmt.Errorf("failed to save manifest: %v", err)
+    }
+
+    return nil
 }
 
-// GetStorageConfig returns the current chunk storage configuration
-func (f *FileOperations) GetStorageConfig() *types.ChunkStorageConfig {
-	return f.config
+// JoinFile joins chunks back into the original file using a .zap file
+func (f *FileOperations) JoinFile(zapPath, outputPath string) error {
+    // Load manifest
+    info, err := loadManifest(zapPath)
+    if err != nil {
+        return fmt.Errorf("failed to load manifest: %v", err)
+    }
+
+    // Create output directory if it doesn't exist
+    if err := os.MkdirAll(outputPath, 0755); err != nil {
+        return fmt.Errorf("failed to create output directory: %v", err)
+    }
+
+    // Get chunks from network if needed
+    peers := f.server.GetPeersWithFile(info.ID)
+    if len(peers) > 0 {
+        if err := f.server.FetchChunks(info, peers[0]); err != nil {
+            return fmt.Errorf("failed to fetch chunks: %v", err)
+        }
+    }
+
+    // Create output file
+    outputFile := filepath.Join(outputPath, info.Name)
+    out, err := os.Create(outputFile)
+    if err != nil {
+        return fmt.Errorf("failed to create output file: %v", err)
+    }
+    defer out.Close()
+
+    // Write chunks in order
+    for i := range info.Chunks {
+        chunkPath := filepath.Join(info.ChunkDir, info.Chunks[i].ID)
+        chunkData, err := os.ReadFile(chunkPath)
+        if err != nil {
+            return fmt.Errorf("failed to read chunk %s: %v", info.Chunks[i].ID, err)
+        }
+
+        if _, err := out.Write(chunkData); err != nil {
+            return fmt.Errorf("failed to write chunk data: %v", err)
+        }
+    }
+
+    return nil
 }
 
-// SplitFile splits a file into chunks and creates a zap file
-func (f *FileOperations) SplitFile(inputPath, outputDir string, chunkSizeStr string) error {
-	// Parse chunk size
-	chunkSize, err := strconv.ParseInt(chunkSizeStr, 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid chunk size: %v", err)
-	}
+// Helper functions
 
-	// Create chunks directory using configured storage
-	chunksDir := f.config.StorageDir
-	if err := os.MkdirAll(chunksDir, 0755); err != nil {
-		return fmt.Errorf("failed to create chunks directory: %v", err)
-	}
-
-	// Split file into chunks
-	chunks, err := chunking.SplitFile(inputPath, chunkSize, chunksDir)
-	if err != nil {
-		return fmt.Errorf("failed to split file: %v", err)
-	}
-
-	// Check available space
-	if err := f.ensureStorageSpace(chunkSize * int64(len(chunks))); err != nil {
-		return fmt.Errorf("insufficient storage space: %v", err)
-	}
-
-	// Generate unique ID
-	id, err := zap.GenerateID()
-	if err != nil {
-		return fmt.Errorf("failed to generate ID: %v", err)
-	}
-
-	// Generate encryption key and get RSA key pair
-	key, err := encryption.GenerateKey()
-	if err != nil {
-		return fmt.Errorf("failed to generate encryption key: %v", err)
-	}
-
-// Create client keypair for secure key retrieval
-privKey, err := rsa.GenerateKey(rand.Reader, 2048)
-if err != nil {
-return fmt.Errorf("failed to generate client keypair: %v", err)
+func generateFileID(path string) string {
+    data := []byte(path + strconv.FormatInt(time.Now().UnixNano(), 10))
+    hash := sha256.Sum256(data)
+    return hex.EncodeToString(hash[:])
 }
 
-// Register file with validator network
-	pubKeyBytes, err := x509.MarshalPKIXPublicKey(&privKey.PublicKey)
-	if err != nil {
-		return fmt.Errorf("failed to marshal public key: %v", err)
-	}
-
-	// Process chunks
-	var zapChunks []zap.ChunkMetadata
-	for _, chunk := range chunks {
-		// Read chunk
-		data, err := os.ReadFile(chunk.Filename)
-		if err != nil {
-			return fmt.Errorf("failed to read chunk: %v", err)
-		}
-
-		// Encrypt chunk
-		encrypted, err := encryption.Encrypt(data, key)
-		if err != nil {
-			return fmt.Errorf("failed to encrypt chunk: %v", err)
-		}
-
-		// Write encrypted chunk
-		encryptedPath := filepath.Join(chunksDir, chunk.Hash)
-		if err := os.WriteFile(encryptedPath, encrypted, 0644); err != nil {
-			return fmt.Errorf("failed to write encrypted chunk: %v", err)
-		}
-
-		zapChunks = append(zapChunks, zap.ChunkMetadata{
-			Index:         chunk.Index,
-			Hash:          chunk.Hash,
-			Size:          chunk.Size,
-			EncryptedHash: chunk.Hash,
-		})
-	}
-
-	// Create zap metadata without raw key
-	metadata := &zap.FileMetadata{
-		ID:           id,
-		OriginalName: filepath.Base(inputPath),
-		ChunkCount:   len(chunks),
-		TotalSize:    chunkSize * int64(len(chunks)),
-		Chunks:       zapChunks,
-	}
-
-	// Request validators to store key shares
-	if err := f.client.RegisterEncryptionKey(id, key, pubKeyBytes); err != nil {
-		return fmt.Errorf("failed to register encryption key: %v", err)
-	}
-
-	// Write zap file
-	if err := zap.CreateZapFile(metadata, outputDir); err != nil {
-		return fmt.Errorf("failed to create zap file: %v", err)
-	}
-
-	// If we have a validator client, register the file
-	if f.client != nil && f.client.IsConnected() {
-		fileInfo := types.FileInfo{
-			Name:      metadata.ID + ".zap",
-			ChunkIDs:  make([]string, len(zapChunks)),
-			Available: true,
-		}
-		for i, chunk := range zapChunks {
-			fileInfo.ChunkIDs[i] = chunk.Hash
-		}
-		if err := f.client.UploadZapFile(fileInfo); err != nil {
-			return fmt.Errorf("failed to register file with validator: %v", err)
-		}
-	}
-
-	return nil
+func generateChunkID(data []byte) string {
+    hash := sha256.Sum256(data)
+    return hex.EncodeToString(hash[:])
 }
 
-// ensureStorageSpace checks if there's enough space for the new chunks
-func (f *FileOperations) ensureStorageSpace(requiredSpace int64) error {
-	if f.config.MaxStorageSize == 0 {
-		return nil // No size limit
-	}
-
-	// Get current storage usage
-	var totalSize int64
-	err := filepath.Walk(f.config.StorageDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			totalSize += info.Size()
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("failed to calculate storage usage: %v", err)
-	}
-
-	// Check if we have enough space
-	if totalSize+requiredSpace > f.config.MaxStorageSize {
-		if !f.config.AutoCleanup {
-			return fmt.Errorf("storage limit exceeded")
-		}
-
-		// Find and remove old chunks until we have enough space
-		// This is a simple implementation - could be improved with LRU cache
-		files, err := os.ReadDir(f.config.StorageDir)
-		if err != nil {
-			return fmt.Errorf("failed to read storage directory: %v", err)
-		}
-
-		// Sort files by modification time
-		type fileInfo struct {
-			path    string
-			modTime time.Time
-		}
-		var filesInfo []fileInfo
-		for _, file := range files {
-			info, err := file.Info()
-			if err != nil {
-				continue
-			}
-			filesInfo = append(filesInfo, fileInfo{
-				path:    filepath.Join(f.config.StorageDir, file.Name()),
-				modTime: info.ModTime(),
-			})
-		}
-		sort.Slice(filesInfo, func(i, j int) bool {
-			return filesInfo[i].modTime.Before(filesInfo[j].modTime)
-		})
-
-		// Remove oldest files until we have enough space
-		for _, file := range filesInfo {
-			info, err := os.Stat(file.path)
-			if err != nil {
-				continue
-			}
-			totalSize -= info.Size()
-			if err := os.Remove(file.path); err != nil {
-				continue
-			}
-			if totalSize+requiredSpace <= f.config.MaxStorageSize {
-				break
-			}
-		}
-
-		// Check if we now have enough space
-		if totalSize+requiredSpace > f.config.MaxStorageSize {
-			return fmt.Errorf("could not free enough storage space")
-		}
-	}
-
-	return nil
+func saveManifest(path string, info *server.FileInfo) error {
+    data, err := json.Marshal(info)
+    if err != nil {
+        return err
+    }
+    return os.WriteFile(path, data, 0644)
 }
 
-// JoinFile reassembles a file from chunks using a zap file
-func (f *FileOperations) JoinFile(zapPath, outputDir string) error {
-	// Read zap metadata
-	metadata, err := zap.ReadZapFile(zapPath)
-	if err != nil {
-		return fmt.Errorf("failed to read zap file: %v", err)
-	}
+func loadManifest(path string) (*server.FileInfo, error) {
+    data, err := os.ReadFile(path)
+    if err != nil {
+        return nil, err
+    }
 
-	// Create client keypair for secure key retrieval
-	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return fmt.Errorf("failed to generate client keypair: %v", err)
-	}
+    var info server.FileInfo
+    if err := json.Unmarshal(data, &info); err != nil {
+        return nil, err
+    }
 
-	// Request decryption key from validator network
-	pubKeyBytes, err := x509.MarshalPKIXPublicKey(&privKey.PublicKey)
-	if err != nil {
-		return fmt.Errorf("failed to marshal public key: %v", err)
-	}
-
-	decryptionKey, err := f.client.RequestDecryptionKey(metadata.ID, pubKeyBytes)
-	if err != nil {
-		return fmt.Errorf("failed to get decryption key: %v", err)
-	}
-
-	// Validate chunks
-	chunksDir := filepath.Join(filepath.Dir(zapPath), "chunks")
-	if err := zap.ValidateChunks(metadata, chunksDir); err != nil {
-		return fmt.Errorf("chunk validation failed: %v", err)
-	}
-
-	// Create temporary directory for decrypted chunks
-	tempDir := filepath.Join(outputDir, "temp")
-	if err := os.MkdirAll(tempDir, 0755); err != nil {
-		return fmt.Errorf("failed to create temp directory: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	var chunkInfos []chunking.ChunkInfo
-	// Process each chunk
-	for _, chunk := range metadata.Chunks {
-		// Read encrypted chunk
-		encryptedData, err := os.ReadFile(filepath.Join(chunksDir, chunk.EncryptedHash))
-		if err != nil {
-			return fmt.Errorf("failed to read encrypted chunk: %v", err)
-		}
-
-		// Decrypt chunk using retrieved key
-		decrypted, err := encryption.Decrypt(encryptedData, decryptionKey)
-		if err != nil {
-			return fmt.Errorf("failed to decrypt chunk: %v", err)
-		}
-
-		// Write decrypted chunk
-		tempPath := filepath.Join(tempDir, chunk.Hash)
-		if err := os.WriteFile(tempPath, decrypted, 0644); err != nil {
-			return fmt.Errorf("failed to write decrypted chunk: %v", err)
-		}
-
-		chunkInfos = append(chunkInfos, chunking.ChunkInfo{
-			Index:    chunk.Index,
-			Hash:     chunk.Hash,
-			Size:     chunk.Size,
-			Filename: tempPath,
-		})
-	}
-
-	// Reassemble file
-	outputPath := filepath.Join(outputDir, metadata.OriginalName)
-	if err := chunking.ReassembleFile(chunkInfos, outputPath); err != nil {
-		return fmt.Errorf("failed to reassemble file: %v", err)
-	}
-
-	return nil
+    return &info, nil
 }

@@ -1,0 +1,50 @@
+name: Go Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+
+    - name: Run Network Core tests
+      run: |
+        cd "Network Core"
+        go mod tidy
+        go test -v ./pkg/network/...
+
+    - name: Run Client tests
+      run: |
+        cd Client
+        go mod tidy
+        go test -v ./...
+
+    - name: Run Divider tests
+      run: |
+        cd Divider
+        go mod tidy
+        go test -v ./...
+
+    - name: Run Reconstructor tests
+      run: |
+        cd Reconstructor
+        go mod tidy
+        go test -v ./...
+
+    - name: Run Validator Server tests
+      run: |
+        cd "Validator Server"
+        go mod tidy
+        go test -v ./...

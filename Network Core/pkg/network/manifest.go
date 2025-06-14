@@ -3,6 +3,7 @@ package network
 import (
 "bytes"
 "context"
+"crypto/sha256"
 "encoding/json"
 "fmt"
 "time"
@@ -243,5 +244,5 @@ func xorDistance(a, b string) []byte {
 
 // getDHTKey returns the DHT key for a manifest name
 func getDHTKey(name string) string {
-	return fmt.Sprintf("/filezap/manifest/%s", name)
+    return fmt.Sprintf("/filezap/manifest/%x", sha256.Sum256([]byte(name)))
 }
