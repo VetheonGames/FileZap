@@ -1,99 +1,75 @@
 package main
 
 import (
-	"flag"
-	"log"
-	"net/http"
-	"time"
+    "context"
+    "flag"
+    "log"
+    "os"
+    "os/signal"
+    "strings"
+    "syscall"
 
-    "github.com/VetheonGames/FileZap/NetworkCore/pkg/filemanager"
-    "github.com/VetheonGames/FileZap/NetworkCore/pkg/peer"
-    "github.com/VetheonGames/FileZap/NetworkCore/pkg/types"
-    "github.com/VetheonGames/FileZap/NetworkCore/pkg/validator"
+    "github.com/VetheonGames/FileZap/NetworkCore/pkg/network"
+    "github.com/multiformats/go-multiaddr"
 )
 
-// Core represents the main Network Core instance coordinating all components
-type Core struct {
-	peerManager     *peer.Manager
-	validatorClient *validator.Client
-	fileManager     *filemanager.Manager
-}
-
-// HandleNewZapFile registers a new .zap file and its chunks
-func (c *Core) HandleNewZapFile(fileName string, chunks []string) error {
-	c.fileManager.RegisterZapFile(fileName, chunks)
-	return nil
-}
-
-// RequestZapFile requests information about a .zap file from the validator
-func (c *Core) RequestZapFile(fileName string) (*types.FileInfo, error) {
-	return c.validatorClient.RequestZapFile(fileName)
-}
-
-// HandleChunkUpload processes a new chunk upload
-func (c *Core) HandleChunkUpload(fileName string, chunkID string, data []byte) error {
-	// TODO: Implement chunk storage
-	return nil
-}
-
-// HandleChunkRequest processes a request for a chunk
-func (c *Core) HandleChunkRequest(fileName string, chunkID string) ([]byte, error) {
-	// TODO: Implement chunk retrieval
-	return nil, nil
-}
-
-// Initialize sets up network listeners and starts handling requests
-func (c *Core) Initialize() error {
-	// Set up HTTP endpoints for peer-to-peer communication
-	http.HandleFunc("/peer/chunk/upload", func(w http.ResponseWriter, r *http.Request) {
-		// TODO: Implement chunk upload endpoint
-	})
-
-	http.HandleFunc("/peer/chunk/request", func(w http.ResponseWriter, r *http.Request) {
-		// TODO: Implement chunk request endpoint
-	})
-
-	return http.ListenAndServe(":3000", nil)
-}
-
 func main() {
-	log.Println("Starting Network Core...")
+    log.Println("Starting FileZap Network Core...")
 
-	// Parse command line flags
-	validatorAddr := flag.String("validator", "localhost:8080", "Validator server address")
-	peerTimeout := flag.Duration("peer-timeout", 1*time.Hour, "Time after which inactive peers are removed")
-	flag.Parse()
+    // Parse command line flags
+    bootstrapNodes := flag.String("bootstrap", "", "Comma-separated list of bootstrap node multiaddrs")
+    flag.Parse()
 
-	// Initialize components
-	peerManager := peer.NewManager(*peerTimeout)
-	validatorClient := validator.NewClient(*validatorAddr)
-	fileManager := filemanager.NewManager()
+    // Create context that will be cancelled on interrupt
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
 
-	// Create core instance
-	core := &Core{
-		peerManager:     peerManager,
-		validatorClient: validatorClient,
-		fileManager:     fileManager,
-	}
+    // Create network engine
+    engine, err := network.NewNetworkEngine(ctx)
+    if err != nil {
+        log.Fatalf("Failed to create network engine: %v", err)
+    }
+    defer engine.Close()
 
-	// Start background tasks
-	go validatorClient.MaintainConnection()
+    // Log transport layer addresses
+    transportHost := engine.GetTransportHost()
+    transportAddrs := transportHost.Addrs()
+    transportID := transportHost.ID()
+    log.Println("Transport Layer (QUIC/UDP):")
+    for _, addr := range transportAddrs {
+        log.Printf("  Listening on: %s/p2p/%s", addr, transportID)
+    }
 
-	// Start background task to update validator about our available files
-	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
-		for range ticker.C {
-			if validatorClient.IsConnected() {
-				availableZaps := fileManager.GetAvailableZaps()
-				validatorClient.UpdateAvailableZaps(availableZaps)
-			}
-		}
-	}()
+    // Log metadata layer addresses
+    metadataHost := engine.GetMetadataHost()
+    metadataAddrs := metadataHost.Addrs()
+    metadataID := metadataHost.ID()
+    log.Println("Metadata Layer (TCP):")
+    for _, addr := range metadataAddrs {
+        log.Printf("  Listening on: %s/p2p/%s", addr, metadataID)
+    }
 
-	log.Printf("Network Core running, connected to validator at %s", *validatorAddr)
+    // Connect to bootstrap nodes if provided
+    if *bootstrapNodes != "" {
+        peers := strings.Split(*bootstrapNodes, ",")
+        for _, peer := range peers {
+            addr, err := multiaddr.NewMultiaddr(peer)
+            if err != nil {
+                log.Printf("Invalid bootstrap address %s: %v", peer, err)
+                continue
+            }
+            if err := engine.Connect(addr); err != nil {
+                log.Printf("Failed to connect to bootstrap node %s: %v", peer, err)
+            } else {
+                log.Printf("Connected to bootstrap node: %s", peer)
+            }
+        }
+    }
 
-	// Initialize HTTP server and start handling requests
-	if err := core.Initialize(); err != nil {
-		log.Fatalf("Failed to initialize network core: %v", err)
-	}
+    // Wait for interrupt signal
+    sigChan := make(chan os.Signal, 1)
+    signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+    <-sigChan
+
+    log.Println("Shutting down...")
 }
