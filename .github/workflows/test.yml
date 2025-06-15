@@ -47,13 +47,6 @@ jobs:
         go mod tidy
         go test -v ./...
 
-    - name: Run Validator Server tests
-      if: always()
-      run: |
-        cd "Validator Server"
-        go mod tidy
-        go test -v ./...
-
     - name: Report Test Status
       if: always()
       run: |

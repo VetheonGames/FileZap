@@ -37,13 +37,18 @@ func NewFileOperations(server ServerInterface) *FileOperations {
 
 // SplitFile splits a file into chunks and generates a .zap file
 func (f *FileOperations) SplitFile(inputPath, outputPath, chunkSizeStr string) error {
-	// Parse chunk size
-	chunkSize, err := strconv.ParseInt(chunkSizeStr, 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid chunk size: %v", err)
-	}
+// Parse chunk size
+chunkSize, err := strconv.ParseInt(chunkSizeStr, 10, 64)
+if err != nil {
+return fmt.Errorf("invalid chunk size: %v", err)
+}
 
-	// Create output directory if it doesn't exist
+// Validate chunk size
+if chunkSize <= 0 {
+return fmt.Errorf("invalid chunk size: must be greater than 0")
+}
+
+// Create output directory if it doesn't exist
 	if err := os.MkdirAll(outputPath, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %v", err)
 	}

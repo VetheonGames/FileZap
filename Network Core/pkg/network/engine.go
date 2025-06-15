@@ -9,25 +9,28 @@ import (
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/p2p/security/noise"
-	quicTransport "github.com/libp2p/go-libp2p/p2p/transport/quic"
-	ma "github.com/multiformats/go-multiaddr"
+"github.com/libp2p/go-libp2p/core/peer"
+"github.com/libp2p/go-libp2p/p2p/security/noise"
+ma "github.com/multiformats/go-multiaddr"
 )
 
 // NewNetworkEngine creates a new P2P network engine
 func NewNetworkEngine(ctx context.Context) (*NetworkEngine, error) {
-	// Create transport node for chunk transfer
-	transportNode, err := newNetworkNode(ctx, "/ip4/0.0.0.0/udp/0/quic", true)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create transport node: %w", err)
-	}
+// Create transport node for chunk transfer
+transportNode, err := newNetworkNode(ctx, []string{
+"/ip4/127.0.0.1/tcp/0",
+}, false)
+if err != nil {
+return nil, fmt.Errorf("failed to create transport node: %w", err)
+}
 
-	// Create metadata node for manifest sharing
-	metadataNode, err := newNetworkNode(ctx, "/ip4/0.0.0.0/tcp/0", false)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create metadata node: %w", err)
-	}
+// Create metadata node for manifest sharing
+metadataNode, err := newNetworkNode(ctx, []string{
+"/ip4/127.0.0.1/tcp/0",
+}, false)
+if err != nil {
+return nil, fmt.Errorf("failed to create metadata node: %w", err)
+}
 
 	// Initialize components
 	manifests := NewManifestManager(ctx, metadataNode.host.ID(), metadataNode.dht, metadataNode.pubsub)
@@ -43,33 +46,63 @@ func NewNetworkEngine(ctx context.Context) (*NetworkEngine, error) {
 }
 
 // newNetworkNode creates a new libp2p node with DHT and pubsub
-func newNetworkNode(ctx context.Context, listenAddr string, useQuic bool) (*NetworkNode, error) {
-	opts := []libp2p.Option{
-		libp2p.ListenAddrStrings(listenAddr),
-		libp2p.Security(noise.ID, noise.New),
-		libp2p.EnableNATService(),
-	}
+func newNetworkNode(ctx context.Context, listenAddrs []string, useQuic bool) (*NetworkNode, error) {
+opts := []libp2p.Option{
+libp2p.ListenAddrStrings(listenAddrs...),
+libp2p.Security(noise.ID, noise.New),
+libp2p.DefaultTransports,
+}
 
-	if useQuic {
-		opts = append(opts, libp2p.Transport(quicTransport.NewTransport))
-	}
-
-	// Create libp2p host
+// Create libp2p host
 	h, err := libp2p.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create libp2p host: %w", err)
 	}
 
-	// Create DHT
-	kdht, err := dht.New(ctx, h, dht.Mode(dht.ModeServer))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create DHT: %w", err)
-	}
+// Create DHT
+kdht, err := dht.New(ctx, h, 
+    dht.Mode(dht.ModeServer),
+    dht.BootstrapPeers(dht.GetDefaultBootstrapPeerAddrInfos()...),
+    dht.ProtocolPrefix("/filezap"),
+)
+if err != nil {
+    return nil, fmt.Errorf("failed to create DHT: %w", err)
+}
 
-	// Bootstrap the DHT
-	if err := kdht.Bootstrap(ctx); err != nil {
-		return nil, fmt.Errorf("failed to bootstrap DHT: %w", err)
-	}
+// Bootstrap the DHT with retry
+bootstrapCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+defer cancel()
+
+if err := kdht.Bootstrap(bootstrapCtx); err != nil {
+    return nil, fmt.Errorf("failed to bootstrap DHT: %w", err)
+}
+
+// Wait for at least one connection
+connected := make(chan struct{})
+go func() {
+    ticker := time.NewTicker(100 * time.Millisecond)
+    defer ticker.Stop()
+    for {
+        select {
+        case <-bootstrapCtx.Done():
+            return
+        case <-ticker.C:
+            if len(h.Network().Peers()) > 0 {
+                close(connected)
+                return
+            }
+        }
+    }
+}()
+
+select {
+case <-connected:
+    // Successfully connected
+case <-bootstrapCtx.Done():
+    if len(h.Network().Peers()) == 0 {
+        return nil, fmt.Errorf("failed to connect to any peers during bootstrap")
+    }
+}
 
 	// Create pubsub
 	ps, err := pubsub.NewGossipSub(ctx, h)

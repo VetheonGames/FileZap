@@ -1,19 +1,62 @@
 package network
 
 import (
-	"bytes"
-	"context"
-	"crypto/sha256"
-	"encoding/json"
-	"fmt"
-	"time"
+    "bytes"
+    "context"
+    "encoding/json"
+    "fmt"
+    "strings"
+    "time"
 
-	"github.com/ipfs/go-cid"
-	dht "github.com/libp2p/go-libp2p-kad-dht"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	"github.com/libp2p/go-libp2p/core/peer"
-	mh "github.com/multiformats/go-multihash"
+    "github.com/ipfs/go-cid"
+    dht "github.com/libp2p/go-libp2p-kad-dht"
+    record "github.com/libp2p/go-libp2p-record"
+    pubsub "github.com/libp2p/go-libp2p-pubsub"
+    "github.com/libp2p/go-libp2p/core/peer"
+    mh "github.com/multiformats/go-multihash"
 )
+
+// Custom validator for DHT records
+type validator struct{}
+
+func (v *validator) Validate(key string, value []byte) error {
+    if !strings.HasPrefix(key, "filezap/") {
+        return fmt.Errorf("invalid key prefix, expected filezap/")
+    }
+    
+    // Try to unmarshal to verify it's a valid manifest
+    var manifest ManifestInfo
+    if err := json.Unmarshal(value, &manifest); err != nil {
+        return fmt.Errorf("invalid manifest data: %w", err)
+    }
+    
+    return nil
+}
+
+func (v *validator) Select(key string, values [][]byte) (int, error) {
+    if len(values) == 0 {
+        return 0, fmt.Errorf("no values to select from")
+    }
+    
+    // Select the most recent valid manifest
+    var latest time.Time
+    selected := 0
+    
+    for i, value := range values {
+        var manifest ManifestInfo
+        if err := json.Unmarshal(value, &manifest); err != nil {
+            continue
+        }
+        
+        // Compare timestamps if available, otherwise keep first valid one
+        if latest.IsZero() || manifest.UpdatedAt.After(latest) {
+            latest = manifest.UpdatedAt
+            selected = i
+        }
+    }
+    
+    return selected, nil
+}
 
 const (
 	manifestTopic            = "filezap-manifests"
@@ -21,22 +64,38 @@ const (
 )
 
 // NewManifestManager creates a new manifest manager
-func NewManifestManager(ctx context.Context, localID peer.ID, dht *dht.IpfsDHT, ps *pubsub.PubSub) *ManifestManager {
+func NewManifestManager(ctx context.Context, localID peer.ID, kdht *dht.IpfsDHT, ps *pubsub.PubSub) *ManifestManager {
+// Get default validators
+var nsval record.NamespacedValidator
+if existing, ok := kdht.Validator.(record.NamespacedValidator); ok {
+    // Start with existing validators
+    nsval = existing
+} else {
+    // If no existing validators, initialize with defaults
+    nsval = record.NamespacedValidator{
+        "pk":   record.PublicKeyValidator{},
+        "ipns": record.PublicKeyValidator{},
+    }
+}
+
+// Add our manifest validator
+nsval["filezap"] = &validator{}
+kdht.Validator = nsval
 	topic, err := ps.Join(manifestTopic)
 	if err != nil {
 		// Log error but continue - pubsub is optional for manifest sync
 		fmt.Printf("failed to join manifest topic: %v\n", err)
 	}
 
-	mm := &ManifestManager{
-		dht:       dht,
-		store:     make(map[string]*ManifestInfo),
-		localNode: localID,
-		topic:     topic,
-	}
+mm := &ManifestManager{
+dht:       kdht,
+store:     make(map[string]*ManifestInfo),
+localNode: localID,
+topic:     topic,
+}
 
-	// Create and start replicator
-	mm.replicator = NewManifestReplicator(dht, mm)
+// Create and start replicator
+mm.replicator = NewManifestReplicator(kdht, mm)
 	go mm.replicator.Start(ctx)
 
 	// Subscribe to manifest updates if topic was created
@@ -49,11 +108,14 @@ func NewManifestManager(ctx context.Context, localID peer.ID, dht *dht.IpfsDHT, 
 
 // AddManifest stores a manifest and ensures it meets replication goals
 func (m *ManifestManager) AddManifest(manifest *ManifestInfo) error {
-	// Store locally
-	m.store[manifest.Name] = manifest
+// Set update timestamp
+manifest.UpdatedAt = time.Now()
 
-	// Store in DHT
-	data, err := json.Marshal(manifest)
+// Store locally
+m.store[manifest.Name] = manifest
+
+// Store in DHT
+data, err := json.Marshal(manifest)
 	if err != nil {
 		return fmt.Errorf("failed to marshal manifest: %w", err)
 	}
@@ -80,11 +142,13 @@ func (m *ManifestManager) GetManifest(name string) (*ManifestInfo, error) {
 		return manifest, nil
 	}
 
-	// Try to get from DHT
-	data, err := m.dht.GetValue(context.Background(), getDHTKey(name))
-	if err != nil {
-		return nil, fmt.Errorf("manifest not found: %w", err)
-	}
+// Try to get from DHT
+dhtKey := getDHTKey(name)
+data, err := m.dht.GetValue(context.Background(), dhtKey)
+if err != nil {
+    // Pass through the DHT error directly so it can be properly checked
+    return nil, err
+}
 
 	var manifest ManifestInfo
 	if err := json.Unmarshal(data, &manifest); err != nil {
@@ -254,5 +318,10 @@ func xorDistance(a, b string) []byte {
 
 // getDHTKey returns the DHT key for a manifest name
 func getDHTKey(name string) string {
-	return fmt.Sprintf("/filezap/manifest/%x", sha256.Sum256([]byte(name)))
+    // Follow libp2p key format: namespace followed by key
+    key := strings.TrimPrefix(name, "/")
+    if !strings.HasPrefix(key, "filezap/") {
+        key = "filezap/" + key
+    }
+    return key
 }

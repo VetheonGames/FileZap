@@ -1,41 +1,63 @@
 package network
 
 import (
-	"bytes"
-	"context"
-	"crypto/rand"
-	"fmt"
-	"sync"
-	"testing"
-	"time"
+    "bytes"
+    "context"
+    "crypto/rand"
+    "fmt"
+    "sync"
+    "testing"
+    "time"
 
-	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+    "github.com/libp2p/go-libp2p"
+    "github.com/libp2p/go-libp2p/core/host"
+    "github.com/libp2p/go-libp2p/core/peer"
+    "github.com/stretchr/testify/assert"
+    "github.com/stretchr/testify/require"
 )
 
 func setupTestHosts(t *testing.T) (host.Host, host.Host) {
-	// Create two libp2p hosts for testing with TCP transport
-	host1, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-	)
-	require.NoError(t, err)
+// Create two libp2p hosts for testing with TCP transport
+host1, err := libp2p.New(
+libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+libp2p.DefaultTransports,
+)
+if err != nil {
+t.Fatal(err)
+}
 
-	host2, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-	)
-	require.NoError(t, err)
+host2, err := libp2p.New(
+libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+libp2p.DefaultTransports,
+)
+if err != nil {
+t.Fatal(err)
+}
 
-	// Connect the hosts
-	peerInfo := host2.Peerstore().PeerInfo(host2.ID())
-	err = host1.Connect(context.Background(), peerInfo)
-	require.NoError(t, err)
+// Get host information
+h1Info := peer.AddrInfo{
+ID:    host1.ID(),
+Addrs: host1.Addrs(),
+}
+h2Info := peer.AddrInfo{
+ID:    host2.ID(),
+Addrs: host2.Addrs(),
+}
 
-	// Wait for connection
-	time.Sleep(time.Millisecond * 100)
+// Add peers to peerstore
+host1.Peerstore().AddAddrs(h2Info.ID, h2Info.Addrs, time.Hour)
+host2.Peerstore().AddAddrs(h1Info.ID, h1Info.Addrs, time.Hour)
 
-	return host1, host2
+// Connect the hosts
+err = host1.Connect(context.Background(), h2Info)
+if err != nil {
+t.Fatal(err)
+}
+
+// Wait for connection
+time.Sleep(time.Millisecond * 100)
+
+return host1, host2
 }
 
 func TestChunkStoreBasicOperations(t *testing.T) {
@@ -95,16 +117,26 @@ func TestChunkStoreMultipleTransfers(t *testing.T) {
 }
 
 func TestChunkStoreNonexistentChunk(t *testing.T) {
-	host1, host2 := setupTestHosts(t)
-	defer host1.Close()
-	defer host2.Close()
+host1, host2 := setupTestHosts(t)
+defer host1.Close()
+defer host2.Close()
 
-	_ = NewChunkStore(host1)
-	store2 := NewChunkStore(host2)
+store1 := NewChunkStore(host1)
+store2 := NewChunkStore(host2)
 
-	// Try to download nonexistent chunk
-	_, err := store2.transfers.Download(host1.ID(), "nonexistent")
-	assert.Error(t, err)
+// Test data to ensure connectivity works
+testHash := "testhash"
+testData := []byte("test data")
+store1.Store(testHash, testData)
+
+// Try to download nonexistent chunk
+_, err := store2.transfers.Download(host1.ID(), "nonexistent")
+assert.Error(t, err, "should fail when chunk does not exist")
+
+// Verify the existing chunk can still be downloaded
+data, err := store2.transfers.Download(host1.ID(), testHash)
+require.NoError(t, err)
+assert.Equal(t, testData, data)
 }
 
 func TestChunkStoreConcurrentTransfers(t *testing.T) {

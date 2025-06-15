@@ -41,27 +41,33 @@ func (cs *ChunkStore) Get(hash string) ([]byte, bool) {
 
 // handleChunkStream handles incoming chunk requests
 func (cs *ChunkStore) handleChunkStream(stream network.Stream) {
-	defer stream.Close()
+    defer stream.Close()
 
-	// Read chunk hash
-	buf := make([]byte, 64)
-	n, err := stream.Read(buf)
-	if err != nil {
-		return
-	}
-	hash := string(buf[:n])
+    // Read chunk hash
+    buf := make([]byte, 64)
+    n, err := stream.Read(buf)
+    if err != nil {
+        stream.Reset()
+        return
+    }
+    hash := string(buf[:n])
 
-	// Get chunk data
-	data, ok := cs.Get(hash)
-	if !ok {
-		return
-	}
+    // Get chunk data
+    data, ok := cs.Get(hash)
+    if !ok {
+        // Send error response (0 byte followed by error message)
+        stream.Write([]byte{0})
+        stream.Write([]byte("chunk not found"))
+        return
+    }
 
-	// Send chunk data
-	_, err = stream.Write(data)
-	if err != nil {
-		return
-	}
+    // Send success response (1 byte followed by data)
+    stream.Write([]byte{1})
+    _, err = stream.Write(data)
+    if err != nil {
+        stream.Reset()
+        return
+    }
 }
 
 // NewTransferManager creates a new transfer manager
@@ -88,11 +94,25 @@ func (tm *TransferManager) Download(from peer.ID, hash string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to send hash: %w", err)
 	}
 
-	// Read chunk data
-	data, err := io.ReadAll(stream)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read chunk: %w", err)
-	}
+// Read response status
+status := make([]byte, 1)
+_, err = stream.Read(status)
+if err != nil {
+    return nil, fmt.Errorf("failed to read status: %w", err)
+}
 
-	return data, nil
+// Check status
+if status[0] == 0 {
+    // Error response
+    errMsg, _ := io.ReadAll(stream)
+    return nil, fmt.Errorf("chunk retrieval failed: %s", string(errMsg))
+}
+
+// Read chunk data
+data, err := io.ReadAll(stream)
+if err != nil {
+    return nil, fmt.Errorf("failed to read chunk: %w", err)
+}
+
+return data, nil
 }

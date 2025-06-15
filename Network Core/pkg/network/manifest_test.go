@@ -1,34 +1,98 @@
 package network
 
 import (
-	"context"
-	"testing"
-	"time"
+"context"
+"encoding/json"
+"testing"
+"time"
 
-	"github.com/libp2p/go-libp2p"
-	dht "github.com/libp2p/go-libp2p-kad-dht"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+"github.com/libp2p/go-libp2p"
+dht "github.com/libp2p/go-libp2p-kad-dht"
+pubsub "github.com/libp2p/go-libp2p-pubsub"
+"github.com/libp2p/go-libp2p/core/host"
+"github.com/libp2p/go-libp2p/core/peer"
+"github.com/stretchr/testify/assert"
+"github.com/stretchr/testify/require"
 )
 
 func setupTestManifestNetwork(ctx context.Context, t *testing.T) (host.Host, *dht.IpfsDHT, *pubsub.PubSub) {
-	// Create a test host
-	h, err := libp2p.New()
-	require.NoError(t, err)
+    // Create hosts
+    h1, err := libp2p.New(
+        libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+        libp2p.DefaultTransports,
+    )
+    require.NoError(t, err)
 
-	// Create DHT
-	d, err := dht.New(ctx, h, dht.Mode(dht.ModeServer))
-	require.NoError(t, err)
-	require.NoError(t, d.Bootstrap(ctx))
+    h2, err := libp2p.New(
+        libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+        libp2p.DefaultTransports,
+    )
+    require.NoError(t, err)
 
-	// Create pubsub
-	ps, err := pubsub.NewGossipSub(ctx, h)
-	require.NoError(t, err)
+    // Create DHTs and set up validators
+    d1, err := dht.New(ctx, h1,
+        dht.Mode(dht.ModeServer),
+        dht.ProtocolPrefix("/filezap"),
+    )
+    require.NoError(t, err)
 
-	return h, d, ps
+    d2, err := dht.New(ctx, h2,
+        dht.Mode(dht.ModeServer),
+        dht.ProtocolPrefix("/filezap"),
+    )
+    require.NoError(t, err)
+    defer d2.Close()
+    defer h2.Close()
+
+    // Create pubsub
+    ps, err := pubsub.NewGossipSub(ctx, h1)
+    require.NoError(t, err)
+
+    // Connect the hosts
+    require.NoError(t, h1.Connect(ctx, peer.AddrInfo{
+        ID:    h2.ID(),
+        Addrs: h2.Addrs(),
+    }))
+
+    // Bootstrap both DHTs
+    bootstrapCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+    defer cancel()
+
+    require.NoError(t, d1.Bootstrap(bootstrapCtx))
+    require.NoError(t, d2.Bootstrap(bootstrapCtx))
+
+    // Wait for DHTs to initialize and connect
+    require.Eventually(t, func() bool {
+        if len(d1.RoutingTable().ListPeers()) == 0 {
+            return false
+        }
+        if len(d2.RoutingTable().ListPeers()) == 0 {
+            return false
+        }
+        return true
+    }, 5*time.Second, 100*time.Millisecond, "DHT failed to initialize")
+
+    // Add some random data to validate DHT is working
+    testKey := "filezap/test-key"
+    testManifest := &ManifestInfo{
+        Name: "test-key",
+        ChunkHashes: []string{"test"},
+        ReplicationGoal: DefaultReplicationGoal,
+        Owner: h1.ID(),
+        Size: 100,
+        UpdatedAt: time.Now(),
+    }
+    testData, err := json.Marshal(testManifest)
+    require.NoError(t, err)
+    require.NoError(t, d1.PutValue(ctx, testKey, testData))
+
+    // Verify DHT can retrieve data
+    require.Eventually(t, func() bool {
+        val, err := d2.GetValue(ctx, testKey)
+        return err == nil && len(val) > 0
+    }, 5*time.Second, 100*time.Millisecond, "DHT retrieval failed")
+
+    return h1, d1, ps
 }
 
 func TestManifestBasicOperations(t *testing.T) {

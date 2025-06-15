@@ -17,11 +17,12 @@ const DefaultReplicationGoal = 5
 
 // ManifestInfo represents a .zap file manifest with its metadata
 type ManifestInfo struct {
-	Name            string
-	ChunkHashes     []string
-	ReplicationGoal int
-	Owner           peer.ID
-	Size            int64
+Name            string
+ChunkHashes     []string
+ReplicationGoal int
+Owner           peer.ID
+Size            int64
+UpdatedAt       time.Time
 }
 
 // NetworkEngine manages the P2P communication for FileZap

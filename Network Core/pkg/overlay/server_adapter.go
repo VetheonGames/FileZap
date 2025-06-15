@@ -4,7 +4,6 @@ import (
     "context"
     "encoding/json"
     "fmt"
-    "strings"
 )
 
 // ServerAdapter wraps the overlay network for HTTP-like server functionality

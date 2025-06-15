@@ -143,6 +143,16 @@ assert.Contains(t, err.Error(), "failed to fetch chunks")
 }
 
 func TestFileOperations_ErrorHandling(t *testing.T) {
+// Create temporary test file
+testDir, err := os.MkdirTemp("", "filezap-test-*")
+require.NoError(t, err)
+defer os.RemoveAll(testDir)
+
+testFile := filepath.Join(testDir, "test.txt")
+testData := "This is test data for FileZap testing."
+err = os.WriteFile(testFile, []byte(testData), 0644)
+require.NoError(t, err)
+
 fileOps := NewFileOperations(newMockServer())
 
 tests := []struct {
@@ -163,7 +173,7 @@ errorMsg:    "failed to open input file",
 },
 {
 name:        "InvalidChunkSize",
-inputPath:   "test.txt",
+inputPath:   testFile,
 outputPath:  "output",
 chunkSize:   "invalid",
 expectError: true,
@@ -171,7 +181,7 @@ errorMsg:    "invalid chunk size",
 },
 {
 name:        "NegativeChunkSize",
-inputPath:   "test.txt",
+inputPath:   testFile,
 outputPath:  "output",
 chunkSize:   "-16",
 expectError: true,
@@ -179,7 +189,7 @@ errorMsg:    "invalid chunk size",
 },
 {
 name:        "ZeroChunkSize",
-inputPath:   "test.txt",
+inputPath:   testFile,
 outputPath:  "output",
 chunkSize:   "0",
 expectError: true,
