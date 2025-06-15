@@ -20,31 +20,45 @@ jobs:
         go-version: '1.21'
 
     - name: Run Network Core tests
+      if: always()
       run: |
         cd "Network Core"
         go mod tidy
         go test -v ./pkg/network/...
 
     - name: Run Client tests
+      if: always()
       run: |
         cd Client
         go mod tidy
         go test -v ./...
 
     - name: Run Divider tests
+      if: always()
       run: |
         cd Divider
         go mod tidy
         go test -v ./...
 
     - name: Run Reconstructor tests
+      if: always()
       run: |
         cd Reconstructor
         go mod tidy
         go test -v ./...
 
     - name: Run Validator Server tests
+      if: always()
       run: |
         cd "Validator Server"
         go mod tidy
         go test -v ./...
+
+    - name: Report Test Status
+      if: always()
+      run: |
+        # Check if any previous steps failed
+        if [[ "${{ job.status }}" == "failure" ]]; then
+          echo "::error::Some tests failed. Please check the logs above for details."
+          exit 1
+        fi
