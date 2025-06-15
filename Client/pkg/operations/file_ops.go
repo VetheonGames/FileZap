@@ -16,13 +16,20 @@ import (
 
 const defaultBufferSize = 32 * 1024 // 32KB buffer
 
+// ServerInterface defines the methods that FileOperations needs from a server
+type ServerInterface interface {
+GetPeersWithFile(fileID string) []string
+RegisterFile(info *server.FileInfo) error
+FetchChunks(fileInfo *server.FileInfo, peerID string) error
+}
+
 // FileOperations handles file splitting and joining operations
 type FileOperations struct {
-	server *server.IntegratedServer
+server ServerInterface
 }
 
 // NewFileOperations creates a new FileOperations instance
-func NewFileOperations(server *server.IntegratedServer) *FileOperations {
+func NewFileOperations(server ServerInterface) *FileOperations {
 	return &FileOperations{
 		server: server,
 	}
