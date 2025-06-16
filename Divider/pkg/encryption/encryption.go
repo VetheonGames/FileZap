@@ -1,11 +1,12 @@
 package encryption
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"encoding/hex"
-	"io"
+"crypto/aes"
+"crypto/cipher"
+"crypto/rand"
+"encoding/hex"
+"fmt"
+"io"
 )
 
 // GenerateKey creates a new random encryption key
@@ -19,10 +20,10 @@ func GenerateKey() (string, error) {
 
 // Encrypt encrypts data using AES-GCM
 func Encrypt(data []byte, keyString string) ([]byte, error) {
-	key, err := hex.DecodeString(keyString)
-	if err != nil {
-		return nil, err
-	}
+    key, err := hex.DecodeString(keyString)
+    if err != nil {
+        return nil, err
+    }
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -44,10 +45,10 @@ func Encrypt(data []byte, keyString string) ([]byte, error) {
 
 // Decrypt decrypts data using AES-GCM
 func Decrypt(encrypted []byte, keyString string) ([]byte, error) {
-	key, err := hex.DecodeString(keyString)
-	if err != nil {
-		return nil, err
-	}
+    key, err := hex.DecodeString(keyString)
+    if err != nil {
+        return nil, err
+    }
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -59,11 +60,12 @@ func Decrypt(encrypted []byte, keyString string) ([]byte, error) {
 		return nil, err
 	}
 
-	nonceSize := gcm.NonceSize()
-	if len(encrypted) < nonceSize {
-		return nil, err
-	}
+nonceSize := gcm.NonceSize()
+if len(encrypted) < nonceSize {
+    return nil, fmt.Errorf("encrypted data is too short")
+}
 
-	nonce, ciphertext := encrypted[:nonceSize], encrypted[nonceSize:]
-	return gcm.Open(nil, nonce, ciphertext, nil)
+nonce, ciphertext := encrypted[:nonceSize], encrypted[nonceSize:]
+// Use an empty slice as the destination buffer to avoid nil return
+return gcm.Open(make([]byte, 0), nonce, ciphertext, nil)
 }

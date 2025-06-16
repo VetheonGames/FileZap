@@ -49,13 +49,47 @@ func GenerateID() (string, error) {
 
 // CreateZapFile creates a .zap file with the provided metadata
 func CreateZapFile(metadata *FileMetadata, outputDir string) error {
-	metadataBytes, err := json.MarshalIndent(metadata, "", "  ")
-	if err != nil {
-		return err
-	}
+    // Check if the path is valid for the current OS
+    if filepath.VolumeName(outputDir) == "" && (len(outputDir) > 0 && (outputDir[0] == '/' || outputDir[0] == '\\')) {
+        return fmt.Errorf("invalid output directory path: must be a valid OS-specific path")
+    }
 
-	zapPath := filepath.Join(outputDir, fmt.Sprintf("%s.zap", metadata.ID))
-	return os.WriteFile(zapPath, metadataBytes, 0644)
+    // Clean and get the absolute path
+    outputDir = filepath.Clean(outputDir)
+    absOutputDir, err := filepath.Abs(outputDir)
+    if err != nil {
+        return fmt.Errorf("invalid output directory path: %v", err)
+    }
+
+    // Check if output directory exists and is accessible
+    dirInfo, err := os.Stat(absOutputDir)
+    if err != nil {
+        return fmt.Errorf("invalid output directory: %v", err)
+    }
+    
+    // Ensure it's actually a directory
+    if !dirInfo.IsDir() {
+        return fmt.Errorf("output path is not a directory")
+    }
+
+    // Validate output directory is writable by trying to create a test file
+    testFile := filepath.Join(outputDir, ".test")
+    if err := os.WriteFile(testFile, []byte{}, 0644); err != nil {
+        return fmt.Errorf("output directory not writable: %v", err)
+    }
+    os.Remove(testFile) // Clean up test file
+
+    metadataBytes, err := json.MarshalIndent(metadata, "", "  ")
+    if err != nil {
+        return fmt.Errorf("failed to marshal metadata: %v", err)
+    }
+
+    zapPath := filepath.Join(outputDir, fmt.Sprintf("%s.zap", metadata.ID))
+    if err := os.WriteFile(zapPath, metadataBytes, 0644); err != nil {
+        return fmt.Errorf("failed to write zap file: %v", err)
+    }
+
+    return nil
 }
 
 // ReadZapFile reads and parses a .zap file
