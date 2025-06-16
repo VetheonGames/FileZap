@@ -9,6 +9,7 @@ import (
 "github.com/libp2p/go-libp2p"
 dht "github.com/libp2p/go-libp2p-kad-dht"
 pubsub "github.com/libp2p/go-libp2p-pubsub"
+record "github.com/libp2p/go-libp2p-record"
 "github.com/libp2p/go-libp2p/core/host"
 "github.com/libp2p/go-libp2p/core/peer"
 "github.com/stretchr/testify/assert"
@@ -29,16 +30,24 @@ func setupTestManifestNetwork(ctx context.Context, t *testing.T) (host.Host, *dh
     )
     require.NoError(t, err)
 
-    // Create DHTs and set up validators
+    // Create DHTs with Server mode and validator
+    nsval := record.NamespacedValidator{
+        "pk":     record.PublicKeyValidator{},
+        "ipns":   record.PublicKeyValidator{},
+        "filezap": &validator{},
+    }
+
     d1, err := dht.New(ctx, h1,
         dht.Mode(dht.ModeServer),
         dht.ProtocolPrefix("/filezap"),
+        dht.Validator(nsval),
     )
     require.NoError(t, err)
 
     d2, err := dht.New(ctx, h2,
         dht.Mode(dht.ModeServer),
         dht.ProtocolPrefix("/filezap"),
+        dht.Validator(nsval),
     )
     require.NoError(t, err)
     defer d2.Close()
@@ -73,7 +82,7 @@ func setupTestManifestNetwork(ctx context.Context, t *testing.T) (host.Host, *dh
     }, 5*time.Second, 100*time.Millisecond, "DHT failed to initialize")
 
     // Add some random data to validate DHT is working
-    testKey := "filezap/test-key"
+    testKey := getDHTKey("test-key")
     testManifest := &ManifestInfo{
         Name: "test-key",
         ChunkHashes: []string{"test"},

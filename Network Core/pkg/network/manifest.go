@@ -20,8 +20,29 @@ import (
 type validator struct{}
 
 func (v *validator) Validate(key string, value []byte) error {
-    if !strings.HasPrefix(key, "filezap/") {
-        return fmt.Errorf("invalid key prefix, expected filezap/")
+    parts := strings.Split(key, "/")
+    
+    // The key should be in the format: /filezap/key or filezap/key
+    if !strings.Contains(key, "filezap") {
+        return fmt.Errorf("key does not contain filezap namespace: %s", key)
+    }
+    
+    // Extract namespace
+    var namespace string
+    if strings.HasPrefix(key, "/") {
+        if len(parts) < 3 {
+            return fmt.Errorf("invalid key format with leading slash: %s", key)
+        }
+        namespace = parts[1]
+    } else {
+        if len(parts) < 2 {
+            return fmt.Errorf("invalid key format without leading slash: %s", key)
+        }
+        namespace = parts[0]
+    }
+    
+    if namespace != "filezap" {
+        return fmt.Errorf("invalid record keytype: expected filezap namespace, got %s", namespace)
     }
     
     // Try to unmarshal to verify it's a valid manifest
@@ -65,21 +86,12 @@ const (
 
 // NewManifestManager creates a new manifest manager
 func NewManifestManager(ctx context.Context, localID peer.ID, kdht *dht.IpfsDHT, ps *pubsub.PubSub) *ManifestManager {
-// Get default validators
-var nsval record.NamespacedValidator
-if existing, ok := kdht.Validator.(record.NamespacedValidator); ok {
-    // Start with existing validators
-    nsval = existing
-} else {
-    // If no existing validators, initialize with defaults
-    nsval = record.NamespacedValidator{
-        "pk":   record.PublicKeyValidator{},
-        "ipns": record.PublicKeyValidator{},
-    }
+// Set up validator
+nsval := record.NamespacedValidator{
+    "pk":     record.PublicKeyValidator{},
+    "ipns":   record.PublicKeyValidator{},
+    "filezap": &validator{},
 }
-
-// Add our manifest validator
-nsval["filezap"] = &validator{}
 kdht.Validator = nsval
 	topic, err := ps.Join(manifestTopic)
 	if err != nil {
@@ -318,10 +330,9 @@ func xorDistance(a, b string) []byte {
 
 // getDHTKey returns the DHT key for a manifest name
 func getDHTKey(name string) string {
-    // Follow libp2p key format: namespace followed by key
+    // Following libp2p-record key format
     key := strings.TrimPrefix(name, "/")
-    if !strings.HasPrefix(key, "filezap/") {
-        key = "filezap/" + key
-    }
-    return key
+    key = strings.TrimPrefix(key, "filezap/")
+    result := "/filezap/" + key  // Leading slash is required for DHT keys
+    return result
 }
