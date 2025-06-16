@@ -1,10 +1,11 @@
 package chunking
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
+"fmt"
+"os"
+"path/filepath"
+"sort"
+"strings"
 )
 
 // ChunkInfo represents metadata about a chunk
@@ -34,12 +35,26 @@ func ReassembleFile(chunks []ChunkInfo, outputPath string) error {
 		}
 	}
 
-	// Create output file
-	outFile, err := os.Create(outputPath)
-	if err != nil {
-		return fmt.Errorf("failed to create output file: %v", err)
-	}
-	defer outFile.Close()
+// Check if path is valid
+if strings.HasPrefix(outputPath, "/") || // Unix absolute path
+   (len(outputPath) > 2 && outputPath[1] == ':') { // Windows absolute path
+    if !isWithinDirectory(outputPath, os.Getenv("USERPROFILE")) {
+        return fmt.Errorf("invalid output path: must be within user directory")
+    }
+}
+
+// Ensure output directory exists
+outputDir := filepath.Dir(outputPath)
+if err := os.MkdirAll(outputDir, 0755); err != nil {
+    return fmt.Errorf("failed to create output directory: %v", err)
+}
+
+// Create output file
+outFile, err := os.Create(outputPath)
+if err != nil {
+    return fmt.Errorf("failed to create output file: %v", err)
+}
+defer outFile.Close()
 
 	// Process each chunk
 	var processedSize int64
@@ -90,8 +105,30 @@ func CleanupTempFiles(chunks []ChunkInfo) {
 		_ = os.Remove(chunk.Filename)
 	}
 
-	// Try to remove the parent temp directory if it's empty
-	if len(chunks) > 0 {
-		_ = os.Remove(filepath.Dir(chunks[0].Filename))
-	}
+// Try to remove the parent temp directory if it's empty
+if len(chunks) > 0 {
+_ = os.Remove(filepath.Dir(chunks[0].Filename))
+}
+}
+
+// isWithinDirectory checks if a path is within a given directory
+func isWithinDirectory(path, dir string) bool {
+    // Clean and make absolute paths for comparison
+    absPath, err := filepath.Abs(path)
+    if err != nil {
+        return false
+    }
+    absDir, err := filepath.Abs(dir)
+    if err != nil {
+        return false
+    }
+
+    // Use filepath.Rel to check if the path is within the directory
+    rel, err := filepath.Rel(absDir, absPath)
+    if err != nil {
+        return false
+    }
+
+    // Check if the relative path tries to escape with ".."
+    return !filepath.IsAbs(rel) && !strings.HasPrefix(rel, "..")
 }

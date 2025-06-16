@@ -101,10 +101,11 @@ func ValidateChunks(metadata *FileMetadata, chunksDir string) error {
 			return fmt.Errorf("failed to access chunk: %v", err)
 		}
 
-		// Verify encrypted chunk size
-		if info.Size() == 0 {
-			return fmt.Errorf("empty chunk file detected: %s", chunk.EncryptedHash)
-		}
+// Verify encrypted chunk size
+if info.Size() != chunk.Size {
+    return fmt.Errorf("chunk size mismatch for %s: expected %d, got %d",
+        chunk.EncryptedHash, chunk.Size, info.Size())
+}
 
 		// Track total size for final validation
 		totalSize += chunk.Size
