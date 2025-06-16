@@ -94,6 +94,172 @@ func setupTestNetwork(t *testing.T, ctx context.Context) (*NetworkEngine, *Netwo
     return engine1, engine2
 }
 
+func TestZapFileOperations(t *testing.T) {
+ctx := context.Background()
+engine1, engine2 := setupTestNetwork(t, ctx)
+defer engine1.Close()
+defer engine2.Close()
+
+manifest := &ManifestInfo{
+Name:        "test.txt",
+Size:        1024,
+ChunkHashes: []string{"hash1", "hash2"},
+Owner:       engine1.GetTransportHost().ID(),
+}
+
+chunks := map[string][]byte{
+"hash1": []byte("chunk1 data"),
+"hash2": []byte("chunk2 data"),
+}
+
+t.Run("Add and Get ZapFile", func(t *testing.T) {
+// Test adding file
+err := engine1.AddZapFile(manifest, chunks)
+require.NoError(t, err)
+
+// Test retrieval from the same node
+retrievedManifest, retrievedChunks, err := engine1.GetZapFile(manifest.Name)
+require.NoError(t, err)
+assert.Equal(t, manifest, retrievedManifest)
+assert.Equal(t, chunks, retrievedChunks)
+
+// Test retrieval from a different node
+retrievedManifest, retrievedChunks, err = engine2.GetZapFile(manifest.Name)
+require.NoError(t, err)
+assert.Equal(t, manifest, retrievedManifest)
+assert.Equal(t, chunks, retrievedChunks)
+})
+
+t.Run("Nonexistent File", func(t *testing.T) {
+_, _, err := engine1.GetZapFile("nonexistent.txt")
+assert.Error(t, err)
+})
+}
+
+func TestBootstrapping(t *testing.T) {
+ctx := context.Background()
+engine1, err := NewNetworkEngine(ctx)
+require.NoError(t, err)
+defer engine1.Close()
+
+// Create bootstrap nodes
+bootstrapNodes := make([]*NetworkEngine, 3)
+bootstrapAddrs := make([]ma.Multiaddr, 3)
+for i := range bootstrapNodes {
+node, err := NewNetworkEngine(ctx)
+require.NoError(t, err)
+defer node.Close()
+bootstrapNodes[i] = node
+
+addr := node.GetTransportHost().Addrs()[0]
+peerID := node.GetTransportHost().ID()
+p2pComponent, err := ma.NewMultiaddr(fmt.Sprintf("/p2p/%s", peerID.String()))
+require.NoError(t, err)
+bootstrapAddrs[i] = addr.Encapsulate(p2pComponent)
+}
+
+// Test bootstrapping
+err = engine1.Bootstrap(bootstrapAddrs)
+require.NoError(t, err)
+
+// Verify connections
+for _, node := range bootstrapNodes {
+require.Eventually(t, func() bool {
+return engine1.transportNode.host.Network().Connectedness(node.GetTransportHost().ID()) == network.Connected
+}, 5*time.Second, 100*time.Millisecond)
+}
+
+// Test failed bootstrap
+invalidAddr, err := ma.NewMultiaddr("/ip4/127.0.0.1/tcp/1234/p2p/QmInvalid")
+require.NoError(t, err)
+err = engine1.Bootstrap([]ma.Multiaddr{invalidAddr})
+assert.Error(t, err)
+}
+
+func TestConcurrentOperations(t *testing.T) {
+ctx := context.Background()
+engine1, engine2 := setupTestNetwork(t, ctx)
+defer engine1.Close()
+defer engine2.Close()
+
+const numOperations = 10
+errors := make(chan error, numOperations*2)
+done := make(chan bool, numOperations*2)
+
+// Concurrent file operations
+for i := 0; i < numOperations; i++ {
+go func(i int) {
+manifest := &ManifestInfo{
+Name:        fmt.Sprintf("test%d.txt", i),
+Size:        1024,
+ChunkHashes: []string{fmt.Sprintf("hash%d", i)},
+Owner:       engine1.GetTransportHost().ID(),
+}
+chunks := map[string][]byte{
+fmt.Sprintf("hash%d", i): []byte(fmt.Sprintf("data%d", i)),
+}
+
+if err := engine1.AddZapFile(manifest, chunks); err != nil {
+errors <- fmt.Errorf("add error: %v", err)
+return
+}
+
+_, _, err := engine2.GetZapFile(manifest.Name)
+if err != nil {
+errors <- fmt.Errorf("get error: %v", err)
+return
+}
+
+done <- true
+}(i)
+}
+
+// Wait for all operations
+for i := 0; i < numOperations; i++ {
+select {
+case err := <-errors:
+t.Errorf("Concurrent operation failed: %v", err)
+case <-done:
+// Operation succeeded
+}
+}
+}
+
+func TestNetworkFailures(t *testing.T) {
+ctx := context.Background()
+engine1, engine2 := setupTestNetwork(t, ctx)
+
+manifest := &ManifestInfo{
+Name:        "test.txt",
+Size:        1024,
+ChunkHashes: []string{"hash1"},
+Owner:       engine1.GetTransportHost().ID(),
+}
+chunks := map[string][]byte{"hash1": []byte("data")}
+
+// Add file before simulating failures
+err := engine1.AddZapFile(manifest, chunks)
+require.NoError(t, err)
+
+// Test network partition
+engine2.Close()
+_, _, err = engine1.GetZapFile(manifest.Name)
+assert.NoError(t, err, "should work from cache")
+
+// Test new node after partition
+engine3, err := NewNetworkEngine(ctx)
+require.NoError(t, err)
+defer engine3.Close()
+
+_, _, err = engine3.GetZapFile(manifest.Name)
+assert.Error(t, err, "should fail without connection to owner")
+
+// Test cleanup
+engine1.Close()
+_, _, err = engine3.GetZapFile(manifest.Name)
+assert.Error(t, err, "should fail after owner shutdown")
+}
+
 func TestNetworkEngineConnect(t *testing.T) {
     ctx := context.Background()
     engine1, engine2 := setupTestNetwork(t, ctx)

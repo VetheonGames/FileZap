@@ -3,6 +3,7 @@ package network
 import (
 "context"
 "encoding/json"
+"fmt"
 "testing"
 "time"
 
@@ -227,6 +228,183 @@ host1, dht1, ps1 := setupTestManifestNetwork(ctx, t)
 	require.NoError(t, err)
 	assert.Equal(t, 2, len(retrieved.ChunkHashes))
 	assert.Equal(t, int64(1024), retrieved.Size)
+}
+
+func TestManifestErrorCases(t *testing.T) {
+ctx := context.Background()
+host, dht, ps := setupTestManifestNetwork(ctx, t)
+defer host.Close()
+defer dht.Close()
+
+mm := NewManifestManager(ctx, host.ID(), dht, ps)
+
+t.Run("Invalid Manifest", func(t *testing.T) {
+// Test empty name
+manifest := &ManifestInfo{
+ChunkHashes:     []string{"hash1"},
+ReplicationGoal: DefaultReplicationGoal,
+Owner:           host.ID(),
+Size:            1024,
+}
+err := mm.AddManifest(manifest)
+assert.Error(t, err)
+
+// Test empty chunk hashes
+manifest.Name = "test.zap"
+manifest.ChunkHashes = nil
+err = mm.AddManifest(manifest)
+assert.Error(t, err)
+
+// Test invalid replication goal
+manifest.ChunkHashes = []string{"hash1"}
+manifest.ReplicationGoal = 0
+err = mm.AddManifest(manifest)
+assert.Error(t, err)
+
+// Test missing owner
+manifest.ReplicationGoal = DefaultReplicationGoal
+manifest.Owner = ""
+err = mm.AddManifest(manifest)
+assert.Error(t, err)
+})
+
+t.Run("Network Disruption", func(t *testing.T) {
+// Create valid manifest
+manifest := &ManifestInfo{
+Name:            "disrupted.zap",
+ChunkHashes:     []string{"hash1"},
+ReplicationGoal: DefaultReplicationGoal,
+Owner:           host.ID(),
+Size:            1024,
+}
+
+// Add manifest
+err := mm.AddManifest(manifest)
+require.NoError(t, err)
+
+// Close DHT connection to simulate network disruption
+dht.Close()
+
+// Verify operations fail gracefully
+_, err = mm.GetManifest(manifest.Name)
+assert.Error(t, err)
+
+err = mm.AddManifest(manifest)
+assert.Error(t, err)
+})
+}
+
+func TestConcurrentManifestOperations(t *testing.T) {
+ctx := context.Background()
+host, dht, ps := setupTestManifestNetwork(ctx, t)
+defer host.Close()
+defer dht.Close()
+
+mm := NewManifestManager(ctx, host.ID(), dht, ps)
+
+const numOperations = 10
+errors := make(chan error, numOperations*2)
+done := make(chan bool, numOperations*2)
+
+// Concurrent manifest operations
+for i := 0; i < numOperations; i++ {
+go func(i int) {
+// Create and add manifest
+manifest := &ManifestInfo{
+Name:            fmt.Sprintf("concurrent%d.zap", i),
+ChunkHashes:     []string{fmt.Sprintf("hash%d", i)},
+ReplicationGoal: DefaultReplicationGoal,
+Owner:           host.ID(),
+Size:            1024,
+}
+
+if err := mm.AddManifest(manifest); err != nil {
+errors <- fmt.Errorf("add error: %v", err)
+return
+}
+
+// Retrieve manifest
+_, err := mm.GetManifest(manifest.Name)
+if err != nil {
+errors <- fmt.Errorf("get error: %v", err)
+return
+}
+
+// Update manifest
+manifest.ChunkHashes = append(manifest.ChunkHashes, fmt.Sprintf("hash%d-2", i))
+if err := mm.AddManifest(manifest); err != nil {
+errors <- fmt.Errorf("update error: %v", err)
+return
+}
+
+done <- true
+}(i)
+}
+
+// Wait for all operations
+for i := 0; i < numOperations; i++ {
+select {
+case err := <-errors:
+t.Errorf("Concurrent operation failed: %v", err)
+case <-done:
+// Operation succeeded
+}
+}
+}
+
+func TestManifestEdgeCases(t *testing.T) {
+ctx := context.Background()
+host, dht, ps := setupTestManifestNetwork(ctx, t)
+defer host.Close()
+defer dht.Close()
+
+mm := NewManifestManager(ctx, host.ID(), dht, ps)
+
+t.Run("Update After Network Partition", func(t *testing.T) {
+// Create initial manifest
+manifest := &ManifestInfo{
+Name:            "partition.zap",
+ChunkHashes:     []string{"hash1"},
+ReplicationGoal: DefaultReplicationGoal,
+Owner:           host.ID(),
+Size:            1024,
+}
+
+err := mm.AddManifest(manifest)
+require.NoError(t, err)
+
+// Close DHT connection
+dht.Close()
+
+// Attempt update during partition
+manifest.ChunkHashes = append(manifest.ChunkHashes, "hash2")
+err = mm.AddManifest(manifest)
+assert.Error(t, err)
+})
+
+t.Run("Large Manifest", func(t *testing.T) {
+// Create manifest with many chunks
+chunks := make([]string, 1000)
+for i := range chunks {
+chunks[i] = fmt.Sprintf("hash%d", i)
+}
+
+manifest := &ManifestInfo{
+Name:            "large.zap",
+ChunkHashes:     chunks,
+ReplicationGoal: DefaultReplicationGoal,
+Owner:           host.ID(),
+Size:            1024 * 1024,
+}
+
+err := mm.AddManifest(manifest)
+require.NoError(t, err)
+
+// Verify retrieval works
+retrieved, err := mm.GetManifest(manifest.Name)
+require.NoError(t, err)
+assert.Equal(t, len(chunks), len(retrieved.ChunkHashes))
+})
 }
 
 func TestManifestNonexistent(t *testing.T) {

@@ -1,0 +1,75 @@
+name: Go Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: ['Network Core', 'Client', 'Divider', 'Reconstructor']
+      fail-fast: false  # Continue with other modules if one fails
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+        cache: true
+
+    - name: Increase system limits
+      run: |
+        sudo sysctl -w net.ipv4.ip_local_port_range="1024 65535"
+        sudo sysctl -w net.ipv4.tcp_fin_timeout=30
+        sudo sysctl -w fs.file-max=2097152
+        sudo sysctl -w net.core.rmem_max=16777216
+        sudo sysctl -w net.core.wmem_max=16777216
+
+    - name: Install Dependencies
+      working-directory: ${{ matrix.module }}
+      run: |
+        ulimit -n 16384  # Increase file descriptor limit
+        go mod download
+
+    - name: Run Tests
+      working-directory: ${{ matrix.module }}
+      env:
+        GOMAXPROCS: 4
+        GORACE: "halt_on_error=1"
+        GO_TEST_TIMEOUT: 10m
+      run: |
+        # First attempt
+        if ! go test -v -race -timeout=10m -parallel=4 \
+          -covermode=atomic -coverprofile=coverage.txt \
+          -cpu=4 -count=1 ./...; then
+          echo "First test attempt failed, waiting 30s before retry..."
+          sleep 30
+          # Second attempt with longer timeout
+          go test -v -race -timeout=15m -parallel=4 \
+            -covermode=atomic -coverprofile=coverage.txt \
+            -cpu=4 -count=1 ./...
+        fi
+
+    - name: Upload test logs
+      if: always()  # Upload logs even if tests fail
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-logs-${{ matrix.module }}
+        path: |
+          ${{ matrix.module }}/**/*test.log
+          ${{ matrix.module }}/**/test-*.log
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./${{ matrix.module }}/coverage.txt
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: true

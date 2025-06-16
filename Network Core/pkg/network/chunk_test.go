@@ -139,6 +139,161 @@ require.NoError(t, err)
 assert.Equal(t, testData, data)
 }
 
+func TestChunkStoreNetworkFailures(t *testing.T) {
+host1, host2 := setupTestHosts(t)
+defer host1.Close()
+defer host2.Close()
+
+store1 := NewChunkStore(host1)
+store2 := NewChunkStore(host2)
+
+// Store test chunk
+testHash := "testhash"
+testData := []byte("test data")
+store1.Store(testHash, testData)
+
+// Test disconnection during transfer
+bigData := make([]byte, 10*1024*1024) // 10MB chunk
+rand.Read(bigData)
+store1.Store("bighash", bigData)
+
+// Start download and immediately close connection
+go func() {
+time.Sleep(100 * time.Millisecond)
+host1.Network().ClosePeer(host2.ID())
+}()
+
+_, err := store2.transfers.Download(host1.ID(), "bighash")
+assert.Error(t, err, "should fail when connection is closed")
+
+// Reconnect hosts
+err = host1.Connect(context.Background(), peer.AddrInfo{
+ID:    host2.ID(),
+Addrs: host2.Addrs(),
+})
+require.NoError(t, err)
+time.Sleep(100 * time.Millisecond)
+
+// Verify normal transfer still works
+data, err := store2.transfers.Download(host1.ID(), testHash)
+require.NoError(t, err)
+assert.Equal(t, testData, data)
+}
+
+func TestChunkStoreLimits(t *testing.T) {
+host1, _ := setupTestHosts(t)
+defer host1.Close()
+
+store := NewChunkStore(host1)
+
+// Test memory limits
+bigChunk := make([]byte, 100*1024*1024) // 100MB chunk
+rand.Read(bigChunk)
+store.Store("bighash", bigChunk)
+
+// Try to store more chunks than the memory limit
+for i := 0; i < 20; i++ { // Try to store 2GB total
+data := make([]byte, 100*1024*1024)
+rand.Read(data)
+store.Store(fmt.Sprintf("hash%d", i), data)
+}
+
+// Verify older chunks are evicted
+_, exists := store.Get("bighash")
+assert.False(t, exists, "first chunk should be evicted")
+
+// Test chunk size limit
+hugeChunk := make([]byte, 1024*1024*1024) // 1GB chunk
+rand.Read(hugeChunk)
+store.Store("hugehash", hugeChunk)
+_, exists = store.Get("hugehash")
+assert.False(t, exists, "oversized chunk should not be stored")
+}
+
+func TestChunkTransferInterruption(t *testing.T) {
+host1, host2 := setupTestHosts(t)
+defer host1.Close()
+defer host2.Close()
+
+store1 := NewChunkStore(host1)
+store2 := NewChunkStore(host2)
+
+// Create large chunk
+data := make([]byte, 10*1024*1024) // 10MB
+rand.Read(data)
+store1.Store("largehash", data)
+
+// Start multiple concurrent downloads and interrupt them
+var wg sync.WaitGroup
+errors := make(chan error, 5)
+
+// Start downloads
+for i := 0; i < 5; i++ {
+wg.Add(1)
+go func() {
+defer wg.Done()
+
+// Start download and interrupt by closing connection
+go func() {
+time.Sleep(50 * time.Millisecond)
+host1.Network().ClosePeer(host2.ID())
+}()
+
+_, err := store2.transfers.Download(host1.ID(), "largehash")
+if err == nil {
+errors <- fmt.Errorf("expected error on interrupted transfer")
+}
+}()
+}
+
+// Wait for all attempts
+wg.Wait()
+close(errors)
+
+// Check for expected failures
+for err := range errors {
+t.Error(err)
+}
+
+// Reconnect hosts for final test
+connectErr := host1.Connect(context.Background(), peer.AddrInfo{
+ID:    host2.ID(),
+Addrs: host2.Addrs(),
+})
+require.NoError(t, connectErr)
+time.Sleep(100 * time.Millisecond)
+
+// Verify chunk can still be downloaded normally
+downloadedData, err := store2.transfers.Download(host1.ID(), "largehash")
+require.NoError(t, err)
+assert.Equal(t, data, downloadedData)
+}
+
+func TestInvalidChunkMetadata(t *testing.T) {
+host1, host2 := setupTestHosts(t)
+defer host1.Close()
+defer host2.Close()
+
+store1 := NewChunkStore(host1)
+store2 := NewChunkStore(host2)
+
+// Test with invalid hash format
+invalidHash := string([]byte{0xFF, 0xFE, 0xFD}) // Invalid UTF-8
+store1.Store(invalidHash, []byte("test"))
+_, err := store2.transfers.Download(host1.ID(), invalidHash)
+assert.Error(t, err)
+
+// Test with empty hash
+store1.Store("", []byte("test"))
+_, err = store2.transfers.Download(host1.ID(), "")
+assert.Error(t, err)
+
+// Test with nil data
+store1.Store("nilhash", nil)
+_, err = store2.transfers.Download(host1.ID(), "nilhash")
+assert.Error(t, err)
+}
+
 func TestChunkStoreConcurrentTransfers(t *testing.T) {
 	host1, host2 := setupTestHosts(t)
 	defer host1.Close()
