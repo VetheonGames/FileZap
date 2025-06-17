@@ -1,18 +1,69 @@
 package network
 
 import (
-"context"
-"fmt"
-"io"
-"time"
+    "context"
+    "fmt"
+    "io"
+    "sync"
+    "time"
 
-"github.com/libp2p/go-libp2p/core/network"
-"github.com/libp2p/go-libp2p/core/peer"
-"github.com/libp2p/go-libp2p/core/protocol"
+    "github.com/libp2p/go-libp2p/core/host"
+    "github.com/libp2p/go-libp2p/core/network"
+    "github.com/libp2p/go-libp2p/core/peer"
+    "github.com/libp2p/go-libp2p/core/protocol"
+    quic "github.com/quic-go/quic-go"
 )
 
-const chunkProtocol = "/filezap/chunk/1.0.0"
+// Protocol identifiers
+const (
+    chunkProtocol = "/filezap/chunk/1.0.0"
+)
 
+// Define size limits
+const (
+    maxChunkSize = 100 * 1024 * 1024  // 100MB max chunk size
+    maxTotalSize = 1024 * 1024 * 1024 // 1GB total storage limit
+)
+
+// TransferManager handles QUIC-based chunk transfers
+type TransferManager struct {
+    host     host.Host
+    sessions map[peer.ID]*quic.Connection
+    mu       sync.RWMutex
+}
+
+// NewTransferManager creates a new transfer manager
+func NewTransferManager(host host.Host) *TransferManager {
+    return &TransferManager{
+        host:     host,
+        sessions: make(map[peer.ID]*quic.Connection),
+        mu:       sync.RWMutex{},
+    }
+}
+
+// NewChunkStore creates a new chunk store
+func NewChunkStore(host host.Host) *ChunkStore {
+    cs := &ChunkStore{
+        host:      host,
+        chunks:    make(map[string][]byte),
+        transfers: NewTransferManager(host),
+        requests:  make(chan *StorageRequest, 100),
+    }
+
+    // Set up chunk protocol handler
+    host.SetStreamHandler(protocol.ID(chunkProtocol), cs.handleChunkStream)
+    return cs
+}
+
+// GetPendingRequest gets the next pending storage request
+func (cs *ChunkStore) GetPendingRequest() (*StorageRequest, error) {
+    select {
+    case req := <-cs.requests:
+        return req, nil
+    default:
+        return nil, fmt.Errorf("no pending requests")
+    }
+}
 
 // isValidChunk validates chunk metadata
 func isValidChunk(hash string, data []byte) bool {
@@ -142,7 +193,6 @@ func (cs *ChunkStore) handleChunkStream(stream network.Stream) {
         }
     }
 }
-
 
 // Download downloads a chunk from a peer
 func (tm *TransferManager) Download(from peer.ID, hash string) ([]byte, error) {

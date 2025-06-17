@@ -1,16 +1,33 @@
 package network
 
 import (
-	"context"
-	"sync"
-	"time"
+    "context"
+    "sync"
+    "time"
 
-	dht "github.com/libp2p/go-libp2p-kad-dht"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/quic-go/quic-go"
+    dht "github.com/libp2p/go-libp2p-kad-dht"
+    pubsub "github.com/libp2p/go-libp2p-pubsub"
+    "github.com/libp2p/go-libp2p/core/host"
+    "github.com/libp2p/go-libp2p/core/peer"
 )
+
+// StorageRequest represents a request to store a chunk
+type StorageRequest struct {
+    ChunkHash string    // Hash of the chunk
+    Data      []byte    // Chunk data
+    Timestamp time.Time // When the request was made
+    Requester string    // ID of requesting node
+    Size      int64     // Size of chunk
+}
+
+// StorageNodeInfo tracks a node's storage capabilities
+type StorageNodeInfo struct {
+    ID            string
+    AvailableSpace int64
+    Uptime        float64
+    LastSeen      time.Time
+    ChunksStored  []string
+}
 
 // ReplicationGoal represents the number of nodes that should store a manifest
 const DefaultReplicationGoal = 5
@@ -70,22 +87,14 @@ type ManifestManager struct {
 
 // ChunkStore handles the storage and transfer of file chunks using QUIC
 type ChunkStore struct {
+    host       host.Host
     chunks     map[string][]byte
     transfers  *TransferManager
     totalSize  uint64
     mu         sync.RWMutex
-}
-
-const (
-    maxChunkSize   = 100 * 1024 * 1024  // 100MB max chunk size
-    maxTotalSize   = 1024 * 1024 * 1024 // 1GB total storage limit
-)
-
-// TransferManager handles QUIC-based chunk transfers
-type TransferManager struct {
-	host     host.Host
-	sessions map[peer.ID]*quic.Connection
-	mu       sync.RWMutex
+    
+    // Storage request handling
+    requests   chan *StorageRequest
 }
 
 // ManifestReplicator ensures manifests meet their replication goals

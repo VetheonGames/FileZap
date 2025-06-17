@@ -5,10 +5,10 @@ import (
     "fmt"
     "time"
 
+    "github.com/libp2p/go-libp2p/core/host"
     "github.com/libp2p/go-libp2p/core/peer"
     ma "github.com/multiformats/go-multiaddr"
 )
-
 
 // NetworkConfig holds configuration for the network engine
 type NetworkConfig struct {
@@ -229,7 +229,6 @@ func (e *NetworkEngine) checkPeerHealth() {
 
 // handleBannedPeer handles cleanup when a peer is banned
 func (e *NetworkEngine) handleBannedPeer(id peer.ID) {
-
     // Disconnect from peer
     if err := e.transportNode.host.Network().ClosePeer(id); err != nil {
         return
@@ -244,7 +243,6 @@ func (e *NetworkEngine) handleBannedPeer(id peer.ID) {
 
 // handleRemovedFile handles cleanup when a file is removed
 func (e *NetworkEngine) handleRemovedFile(name string) {
-
     // Remove manifest
     if manifest, err := e.manifests.GetManifest(name); err == nil {
         // Remove associated chunks
@@ -252,6 +250,124 @@ func (e *NetworkEngine) handleRemovedFile(name string) {
             e.chunkStore.Remove(hash)
         }
     }
+}
+
+// GetNodeID returns this node's ID
+func (e *NetworkEngine) GetNodeID() string {
+    return e.transportNode.host.ID().String()
+}
+
+// GetPeers returns a list of connected peers
+func (e *NetworkEngine) GetPeers() []peer.ID {
+    return e.transportNode.host.Network().Peers()
+}
+
+// GetStoredChunks returns all chunks stored by this node
+func (e *NetworkEngine) GetStoredChunks() [][]byte {
+    chunks := make([][]byte, 0)
+    for _, data := range e.chunkStore.chunks {
+        chunks = append(chunks, data)
+    }
+    return chunks
+}
+
+// GetRequestCount returns the number of storage requests handled
+func (e *NetworkEngine) GetRequestCount() int {
+    // TODO: Implement proper request counting
+    return len(e.chunkStore.chunks)
+}
+
+// GetTransportHost returns the transport network host
+func (e *NetworkEngine) GetTransportHost() host.Host {
+    return e.transportNode.host
+}
+
+// GetMetadataHost returns the metadata network host
+func (e *NetworkEngine) GetMetadataHost() host.Host {
+    return e.metadataNode.host
+}
+
+// Bootstrap connects to initial peers to join the network
+func (e *NetworkEngine) Bootstrap(addrs []peer.AddrInfo) error {
+    for _, addr := range addrs {
+        if err := e.transportNode.host.Connect(e.ctx, addr); err != nil {
+            return fmt.Errorf("failed to connect to bootstrap peer: %w", err)
+        }
+        if err := e.metadataNode.host.Connect(e.ctx, addr); err != nil {
+            return fmt.Errorf("failed to connect metadata to bootstrap peer: %w", err)
+        }
+    }
+    return nil
+}
+
+// RegisterStorageNode registers this node as a storage provider
+func (e *NetworkEngine) RegisterStorageNode() error {
+    // Create storage node info
+    nodeInfo := &StorageNodeInfo{
+        ID:             e.transportNode.host.ID().String(),
+        AvailableSpace: maxTotalSize - int64(e.chunkStore.totalSize),
+        Uptime:        100.0, // Start with perfect uptime
+        LastSeen:      time.Now(),
+        ChunksStored:  make([]string, 0),
+    }
+
+    // Announce to the network via gossip
+    return e.gossipMgr.AnnounceStorageNode(nodeInfo)
+}
+
+// UnregisterStorageNode removes this node from the storage provider list
+func (e *NetworkEngine) UnregisterStorageNode() error {
+    return e.gossipMgr.RemoveStorageNode(e.transportNode.host.ID().String())
+}
+
+// ValidateChunkRequest validates if a chunk can be stored
+func (e *NetworkEngine) ValidateChunkRequest(req *StorageRequest) error {
+    // Check available space
+    if int64(e.chunkStore.totalSize)+req.Size > maxTotalSize {
+        return fmt.Errorf("insufficient storage space")
+    }
+    return nil
+}
+
+// StoreChunk stores a chunk from a storage request
+func (e *NetworkEngine) StoreChunk(req *StorageRequest) error {
+    if !e.chunkStore.Store(req.ChunkHash, req.Data) {
+        return fmt.Errorf("failed to store chunk")
+    }
+    return nil
+}
+
+// RejectStorageRequest rejects a chunk storage request
+func (e *NetworkEngine) RejectStorageRequest(req *StorageRequest, reason string) error {
+    return e.gossipMgr.NotifyStorageRejection(req, reason)
+}
+
+// AcknowledgeStorage confirms successful chunk storage
+func (e *NetworkEngine) AcknowledgeStorage(req *StorageRequest) error {
+    return e.gossipMgr.NotifyStorageSuccess(req)
+}
+
+// GetStorageRequest gets a pending chunk storage request
+func (e *NetworkEngine) GetStorageRequest() (*StorageRequest, error) {
+    return e.chunkStore.GetPendingRequest()
+}
+
+// ReportBadPeer reports a malicious peer to the network
+func (e *NetworkEngine) ReportBadPeer(peerID peer.ID, reason string) error {
+    // Propose vote to remove peer
+    if err := e.quorum.ProposeVote(VoteRemovePeer, string(peerID), reason, nil); err != nil {
+        return fmt.Errorf("failed to propose peer removal: %w", err)
+    }
+
+    // Update peer's reputation
+    e.quorum.UpdatePeerReputation(peerID, -50)
+
+    // Disconnect from peer
+    if err := e.transportNode.host.Network().ClosePeer(peerID); err != nil {
+        return fmt.Errorf("failed to disconnect from peer: %w", err)
+    }
+
+    return nil
 }
 
 // Close shuts down the network engine

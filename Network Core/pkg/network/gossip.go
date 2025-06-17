@@ -209,6 +209,68 @@ func (gm *GossipManager) cleanupStaleEntries() {
     }
 }
 
+// AnnounceStorageNode announces this node as a storage provider
+func (gm *GossipManager) AnnounceStorageNode(info *StorageNodeInfo) error {
+    data, err := json.Marshal(struct {
+        Type string         `json:"type"`
+        Info *StorageNodeInfo `json:"info"`
+    }{
+        Type: "storage_announce",
+        Info: info,
+    })
+    if err != nil {
+        return err
+    }
+    return gm.topic.Publish(gm.ctx, data)
+}
+
+// RemoveStorageNode removes this node from storage providers
+func (gm *GossipManager) RemoveStorageNode(nodeID string) error {
+    data, err := json.Marshal(struct {
+        Type   string `json:"type"`
+        NodeID string `json:"node_id"`
+    }{
+        Type:   "storage_remove",
+        NodeID: nodeID,
+    })
+    if err != nil {
+        return err
+    }
+    return gm.topic.Publish(gm.ctx, data)
+}
+
+// NotifyStorageRejection notifies network of rejected storage request
+func (gm *GossipManager) NotifyStorageRejection(req *StorageRequest, reason string) error {
+    data, err := json.Marshal(struct {
+        Type   string         `json:"type"`
+        Request *StorageRequest `json:"request"`
+        Reason string         `json:"reason"`
+    }{
+        Type:    "storage_reject",
+        Request: req,
+        Reason:  reason,
+    })
+    if err != nil {
+        return err
+    }
+    return gm.topic.Publish(gm.ctx, data)
+}
+
+// NotifyStorageSuccess notifies network of successful storage
+func (gm *GossipManager) NotifyStorageSuccess(req *StorageRequest) error {
+    data, err := json.Marshal(struct {
+        Type    string         `json:"type"`
+        Request *StorageRequest `json:"request"`
+    }{
+        Type:    "storage_success",
+        Request: req,
+    })
+    if err != nil {
+        return err
+    }
+    return gm.topic.Publish(gm.ctx, data)
+}
+
 // GetPeers returns all known peers
 func (gm *GossipManager) GetPeers() []*PeerGossipInfo {
     gm.mu.RLock()

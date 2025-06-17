@@ -47,7 +47,14 @@ type VoteResponse struct {
     Voter       peer.ID   `json:"voter"`
     Approve     bool      `json:"approve"`
     Timestamp   time.Time `json:"timestamp"`
+    IsStorer    bool      `json:"is_storer"`    // Whether voter is a storage node
+    Weight      int       `json:"weight"`       // Voting weight (higher for storage nodes)
 }
+
+const (
+    BaseVoteWeight     = 1    // Base voting weight for regular nodes
+    StorerVoteWeight   = 3    // Higher voting weight for storage nodes
+)
 
 // QuorumManager handles network consensus and peer reputation
 type QuorumManager struct {
@@ -73,7 +80,7 @@ type QuorumManager struct {
 // VoteState tracks the state of an active vote
 type VoteState struct {
     Vote          *Vote
-    Responses     map[peer.ID]bool
+    Responses     map[peer.ID]*VoteResponse
     Deadline      time.Time
     complete      bool
 }
@@ -132,10 +139,10 @@ func (qm *QuorumManager) ProposeVote(voteType VoteType, target string, reason st
         Proposer:  qm.host.ID(),
     }
 
-    // Initialize vote state
+// Initialize vote state
     voteState := &VoteState{
         Vote:      vote,
-        Responses: make(map[peer.ID]bool),
+        Responses: make(map[peer.ID]*VoteResponse),
         Deadline:  time.Now().Add(VotingTimeout),
     }
 
@@ -214,10 +221,10 @@ func (qm *QuorumManager) processNewVote(vote *Vote) {
     }
     qm.topic.Publish(qm.ctx, data)
 
-    // Track vote locally
+// Track vote locally
     qm.activeVotes[vote.ID] = &VoteState{
         Vote:      vote,
-        Responses: make(map[peer.ID]bool),
+        Responses: make(map[peer.ID]*VoteResponse),
         Deadline:  time.Now().Add(VotingTimeout),
     }
 }
@@ -232,23 +239,34 @@ func (qm *QuorumManager) processVoteResponse(resp *VoteResponse) {
         return
     }
 
-    // Record vote
-    voteState.Responses[resp.Voter] = resp.Approve
+// Record vote with weight
+totalWeight := 0
+approvalWeight := 0
+for _, v := range voteState.Responses {
+    if v.IsStorer {
+        totalWeight += StorerVoteWeight
+        if v.Approve {
+            approvalWeight += StorerVoteWeight
+        }
+    } else {
+        totalWeight += BaseVoteWeight
+        if v.Approve {
+            approvalWeight += BaseVoteWeight
+        }
+    }
+}
 
-    // Check if we have enough votes
-    totalVotes := len(voteState.Responses)
+// Add new vote
+voteState.Responses[resp.Voter] = resp
+
+// Check if we have enough weighted votes
     totalPeers := len(qm.gossipMgr.GetPeers())
     
-    if totalVotes >= (totalPeers * MinVotingPercentage / 100) {
-        // Calculate result
-        approvals := 0
-        for _, approve := range voteState.Responses {
-            if approve {
-                approvals++
-            }
-        }
+    minRequiredWeight := (totalPeers * BaseVoteWeight * MinVotingPercentage) / 100
 
-        passed := (approvals * 100 / totalVotes) >= MinVotingPercentage
+    if totalWeight >= minRequiredWeight {
+        // Calculate result using weighted votes
+        passed := (approvalWeight * 100 / totalWeight) >= MinVotingPercentage
         voteState.complete = true
         qm.voteResults[resp.VoteID] = passed
 
