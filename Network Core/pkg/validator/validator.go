@@ -123,21 +123,46 @@ return &ManifestValidator{supportedVersions: versions}
 
 // ValidateManifest checks if a manifest is valid
 func (mv *ManifestValidator) ValidateManifest(manifest *types.FileInfo) error {
-// Check required fields
-if manifest.Name == "" {
-return fmt.Errorf("%w: missing name", ErrManifestIncomplete)
-}
+    // Check for nil manifest
+    if manifest == nil {
+        return fmt.Errorf("%w: nil manifest", ErrInvalidManifest)
+    }
 
-if len(manifest.ChunkIDs) == 0 {
-return fmt.Errorf("%w: missing chunk IDs", ErrManifestIncomplete)
-}
+    // Check required fields
+    if manifest.Name == "" {
+        return fmt.Errorf("%w: missing name", ErrManifestIncomplete)
+    }
 
-// Validate each chunk ID format
-for _, chunkID := range manifest.ChunkIDs {
-if len(chunkID) != 64 { // SHA-256 hex string length
-return fmt.Errorf("%w: invalid chunk ID format", ErrInvalidManifest)
-}
-}
+    if len(manifest.ChunkIDs) == 0 {
+        return fmt.Errorf("%w: missing chunk IDs", ErrManifestIncomplete)
+    }
 
-return nil
+    // Validate each chunk ID format
+    for _, chunkID := range manifest.ChunkIDs {
+        if len(chunkID) != 64 { // SHA-256 hex string length
+            return fmt.Errorf("%w: invalid chunk ID format", ErrInvalidManifest)
+        }
+        // Verify it's a valid hex string
+        if _, err := hex.DecodeString(chunkID); err != nil {
+            return fmt.Errorf("%w: chunk ID not valid hex", ErrInvalidManifest)
+        }
+    }
+
+    // Validate peer information if any peers are specified
+    if len(manifest.Peers) > 0 {
+        for _, peer := range manifest.Peers {
+            if peer.PeerID == "" {
+                return fmt.Errorf("%w: missing peer ID", ErrInvalidManifest)
+            }
+            if peer.Address == "" {
+                return fmt.Errorf("%w: missing peer address", ErrInvalidManifest)
+            }
+            // Validate peer address format
+            if err := NewPeerValidator().ValidateAddress(peer.Address); err != nil {
+                return err
+            }
+        }
+    }
+
+    return nil
 }

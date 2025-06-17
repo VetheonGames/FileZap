@@ -24,13 +24,14 @@ PeerBlocked
 
 // PeerInfo represents information about a peer in the network
 type PeerInfo struct {
-ID          peer.ID
-Addrs       []multiaddr.Multiaddr
-State       PeerState
-LastSeen    time.Time
-ChunkCount  int
-TotalChunks int64 // total size of all chunks in bytes
-mu          sync.RWMutex
+    ID          peer.ID
+    Addrs       []multiaddr.Multiaddr
+    State       PeerState
+    LastSeen    time.Time
+    ChunkCount  int
+    TotalChunks int64 // total size of all chunks in bytes
+    manager     *PeerManager
+    mu          sync.RWMutex
 }
 
 // PeerManager handles peer tracking and management
@@ -52,18 +53,30 @@ return pm
 
 // SetLimits sets the operational limits for the peer manager
 func (pm *PeerManager) SetLimits(maxPeers, maxChunks int, maxChunkSize int64) {
-pm.limits.maxPeers = maxPeers
-pm.limits.maxChunks = maxChunks
-pm.limits.maxChunkSize = maxChunkSize
+    // Ensure limits are not negative
+    if maxPeers < 0 {
+        maxPeers = 0
+    }
+    if maxChunks < 0 {
+        maxChunks = 0
+    }
+    if maxChunkSize < 0 {
+        maxChunkSize = 0
+    }
+    
+    pm.limits.maxPeers = maxPeers
+    pm.limits.maxChunks = maxChunks
+    pm.limits.maxChunkSize = maxChunkSize
 }
 
 // AddPeer adds or updates a peer
 func (pm *PeerManager) AddPeer(id peer.ID, addrs []multiaddr.Multiaddr) (*PeerInfo, error) {
 peerInfo, loaded := pm.peers.LoadOrStore(id, &PeerInfo{
-ID:       id,
-Addrs:    addrs,
-State:    PeerConnected,
-LastSeen: time.Now(),
+    ID:       id,
+    Addrs:    addrs,
+    State:    PeerConnected,
+    LastSeen: time.Now(),
+    manager:  pm,
 })
 
 info := peerInfo.(*PeerInfo)
@@ -143,12 +156,20 @@ return peers
 
 // AddChunk updates peer info when a chunk is added
 func (p *PeerInfo) AddChunk(size int64) bool {
-p.mu.Lock()
-defer p.mu.Unlock()
+    p.mu.Lock()
+    defer p.mu.Unlock()
 
-p.ChunkCount++
-p.TotalChunks += size
-return true
+    // Check if adding this chunk would exceed limits
+    if p.ChunkCount >= p.manager.limits.maxChunks {
+        return false
+    }
+    if size > p.manager.limits.maxChunkSize {
+        return false
+    }
+    
+    p.ChunkCount++
+    p.TotalChunks += size
+    return true
 }
 
 // RemoveChunk updates peer info when a chunk is removed

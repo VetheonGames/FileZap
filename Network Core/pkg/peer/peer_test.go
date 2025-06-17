@@ -1,13 +1,14 @@
 package peer
 
 import (
-"fmt"
-"testing"
-"time"
+    "fmt"
+    "testing"
+    "time"
 
-"github.com/libp2p/go-libp2p/core/peer"
-"github.com/multiformats/go-multiaddr"
-"github.com/stretchr/testify/assert"
+    "github.com/libp2p/go-libp2p/core/peer"
+    "github.com/multiformats/go-multiaddr"
+    "github.com/stretchr/testify/assert"
+    "github.com/stretchr/testify/require"
 )
 
 func createTestID(i int) peer.ID {
@@ -268,10 +269,10 @@ assert.Equal(t, PeerConnected, info.GetState())
 }
 
 func TestPeerRaceConditions(t *testing.T) {
-info := &PeerInfo{
-ID:    createTestID(1),
-State: PeerConnected,
-}
+pm := NewPeerManager()
+info, err := pm.AddPeer(createTestID(1), nil)
+require.NoError(t, err)
+info.State = PeerConnected
 
 const numGoroutines = 100
 done := make(chan bool)
@@ -325,32 +326,32 @@ for i := 0; i < numGoroutines*3; i++ {
 }
 
 func TestInvalidInputHandling(t *testing.T) {
-pm := NewPeerManager()
+    pm := NewPeerManager()
 
-// Test nil address list
-id := createTestID(1)
-info, err := pm.AddPeer(id, nil)
-assert.NoError(t, err)
-assert.NotNil(t, info)
-assert.Empty(t, info.Addrs)
+    // Test nil address list
+    id := createTestID(1)
+    info, err := pm.AddPeer(id, nil)
+    assert.NoError(t, err)
+    assert.NotNil(t, info)
+    assert.Empty(t, info.Addrs)
 
-// Test empty peer ID
-var emptyID peer.ID
-_, err = pm.AddPeer(emptyID, createTestAddrs(8080))
-assert.NoError(t, err)
+    // Test empty peer ID
+    var emptyID peer.ID
+    _, err = pm.AddPeer(emptyID, createTestAddrs(8080))
+    assert.NoError(t, err)
 
-// Test negative limits
-pm.SetLimits(-1, -1, -1)
-assert.Equal(t, -1, pm.limits.maxPeers)
-assert.Equal(t, -1, pm.limits.maxChunks)
-assert.Equal(t, int64(-1), pm.limits.maxChunkSize)
+    // Test negative limits - should use minimum of 0
+    pm.SetLimits(-1, -1, -1)
+    assert.Equal(t, 0, pm.limits.maxPeers)
+    assert.Equal(t, 0, pm.limits.maxChunks)
+    assert.Equal(t, int64(0), pm.limits.maxChunkSize)
 
-// Test removing non-existent peer
-pm.RemovePeer(createTestID(99))
+    // Test removing non-existent peer
+    pm.RemovePeer(createTestID(99))
 
-// Test getting state of nil peer
-success := pm.UpdatePeerState(createTestID(99), PeerConnected)
-assert.False(t, success)
+    // Test getting state of nil peer
+    success := pm.UpdatePeerState(createTestID(99), PeerConnected)
+    assert.False(t, success)
 }
 
 func TestPeerLastSeen(t *testing.T) {
