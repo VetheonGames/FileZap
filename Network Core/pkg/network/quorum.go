@@ -1,0 +1,340 @@
+package network
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "sync"
+    "time"
+
+    "github.com/libp2p/go-libp2p/core/host"
+    "github.com/libp2p/go-libp2p/core/peer"
+    pubsub "github.com/libp2p/go-libp2p-pubsub"
+)
+
+const (
+    QuorumTopic            = "filezap-quorum"
+    VotingTimeout         = 30 * time.Second
+    MinQuorumSize        = 5      // Minimum peers needed for valid quorum
+    MinVotingPercentage  = 67     // Min percentage needed for vote to pass (2/3 majority)
+    ReputationThreshold  = -50    // Reputation threshold for peer removal
+    MaxReputation       = 100     // Maximum reputation score
+)
+
+// VoteType represents different types of network votes
+type VoteType int
+
+const (
+    VoteRemovePeer VoteType = iota
+    VoteRemoveFile
+    VoteUpdateRules
+)
+
+// Vote represents a network decision to be made
+type Vote struct {
+    ID          string          `json:"id"`
+    Type        VoteType        `json:"type"`
+    Target      string          `json:"target"`     // Peer ID or file hash
+    Reason      string          `json:"reason"`
+    Evidence    []byte          `json:"evidence"`   // Optional evidence (e.g., invalid chunk data)
+    Timestamp   time.Time       `json:"timestamp"`
+    Proposer    peer.ID         `json:"proposer"`
+}
+
+// VoteResponse represents a peer's vote
+type VoteResponse struct {
+    VoteID      string    `json:"vote_id"`
+    Voter       peer.ID   `json:"voter"`
+    Approve     bool      `json:"approve"`
+    Timestamp   time.Time `json:"timestamp"`
+}
+
+// QuorumManager handles network consensus and peer reputation
+type QuorumManager struct {
+    ctx           context.Context
+    host          host.Host
+    pubsub        *pubsub.PubSub
+    topic         *pubsub.Topic
+    subscription  *pubsub.Subscription
+    gossipMgr     *GossipManager
+
+    // Voting state
+    activeVotes   map[string]*VoteState
+    peerRep       map[peer.ID]int   // Peer reputation scores
+    voteResults   map[string]bool   // Track vote results for quick lookup
+    mu            sync.RWMutex
+
+    // Channels
+    voteComplete  chan *Vote
+    peerBanned    chan peer.ID
+    fileRemoved   chan string
+}
+
+// VoteState tracks the state of an active vote
+type VoteState struct {
+    Vote          *Vote
+    Responses     map[peer.ID]bool
+    Deadline      time.Time
+    complete      bool
+}
+
+// NewQuorumManager creates a new quorum management system
+func NewQuorumManager(ctx context.Context, h host.Host, ps *pubsub.PubSub, gm *GossipManager) (*QuorumManager, error) {
+    // Join quorum topic
+    topic, err := ps.Join(QuorumTopic)
+    if err != nil {
+        return nil, err
+    }
+
+    // Subscribe to vote messages
+    subscription, err := topic.Subscribe()
+    if err != nil {
+        return nil, err
+    }
+
+    qm := &QuorumManager{
+        ctx:          ctx,
+        host:         h,
+        pubsub:       ps,
+        topic:        topic,
+        subscription: subscription,
+        gossipMgr:    gm,
+        activeVotes:  make(map[string]*VoteState),
+        peerRep:      make(map[peer.ID]int),
+        voteResults:  make(map[string]bool),
+        voteComplete: make(chan *Vote, 100),
+        peerBanned:   make(chan peer.ID, 100),
+        fileRemoved:  make(chan string, 100),
+    }
+
+    // Start vote handling
+    go qm.handleVotes()
+    go qm.processVoteResults()
+
+    return qm, nil
+}
+
+// ProposeVote initiates a new network vote
+func (qm *QuorumManager) ProposeVote(voteType VoteType, target string, reason string, evidence []byte) error {
+    // Check if we have enough peers for a valid quorum
+    peers := qm.gossipMgr.GetPeers()
+    if len(peers) < MinQuorumSize {
+        return fmt.Errorf("insufficient peers for quorum: need %d, have %d", MinQuorumSize, len(peers))
+    }
+
+    vote := &Vote{
+        ID:        fmt.Sprintf("%s-%d", target, time.Now().UnixNano()),
+        Type:      voteType,
+        Target:    target,
+        Reason:    reason,
+        Evidence:  evidence,
+        Timestamp: time.Now(),
+        Proposer:  qm.host.ID(),
+    }
+
+    // Initialize vote state
+    voteState := &VoteState{
+        Vote:      vote,
+        Responses: make(map[peer.ID]bool),
+        Deadline:  time.Now().Add(VotingTimeout),
+    }
+
+    // Register active vote
+    qm.mu.Lock()
+    qm.activeVotes[vote.ID] = voteState
+    qm.mu.Unlock()
+
+    // Broadcast vote proposal
+    data, err := json.Marshal(vote)
+    if err != nil {
+        return fmt.Errorf("failed to marshal vote: %w", err)
+    }
+
+    return qm.topic.Publish(qm.ctx, data)
+}
+
+// handleVotes processes incoming vote messages
+func (qm *QuorumManager) handleVotes() {
+    for {
+        msg, err := qm.subscription.Next(qm.ctx)
+        if err != nil {
+            if qm.ctx.Err() != nil {
+                return
+            }
+            continue
+        }
+
+        // Handle vote proposal or response
+        if isVoteResponse(msg.Data) {
+            var resp VoteResponse
+            if err := json.Unmarshal(msg.Data, &resp); err != nil {
+                continue
+            }
+            qm.processVoteResponse(&resp)
+        } else {
+            var vote Vote
+            if err := json.Unmarshal(msg.Data, &vote); err != nil {
+                continue
+            }
+            qm.processNewVote(&vote)
+        }
+    }
+}
+
+// processNewVote handles a new vote proposal
+func (qm *QuorumManager) processNewVote(vote *Vote) {
+    qm.mu.Lock()
+    defer qm.mu.Unlock()
+
+    // Skip if we've already seen this vote
+    if _, exists := qm.activeVotes[vote.ID]; exists {
+        return
+    }
+
+    // Validate vote based on type
+    response := &VoteResponse{
+        VoteID:    vote.ID,
+        Voter:     qm.host.ID(),
+        Timestamp: time.Now(),
+    }
+
+    switch vote.Type {
+    case VoteRemovePeer:
+        response.Approve = qm.validatePeerRemoval(vote)
+    case VoteRemoveFile:
+        response.Approve = qm.validateFileRemoval(vote)
+    case VoteUpdateRules:
+        response.Approve = qm.validateRuleUpdate(vote)
+    }
+
+    // Send vote response
+    data, err := json.Marshal(response)
+    if err != nil {
+        return
+    }
+    qm.topic.Publish(qm.ctx, data)
+
+    // Track vote locally
+    qm.activeVotes[vote.ID] = &VoteState{
+        Vote:      vote,
+        Responses: make(map[peer.ID]bool),
+        Deadline:  time.Now().Add(VotingTimeout),
+    }
+}
+
+// processVoteResponse handles an incoming vote response
+func (qm *QuorumManager) processVoteResponse(resp *VoteResponse) {
+    qm.mu.Lock()
+    defer qm.mu.Unlock()
+
+    voteState, exists := qm.activeVotes[resp.VoteID]
+    if !exists || voteState.complete {
+        return
+    }
+
+    // Record vote
+    voteState.Responses[resp.Voter] = resp.Approve
+
+    // Check if we have enough votes
+    totalVotes := len(voteState.Responses)
+    totalPeers := len(qm.gossipMgr.GetPeers())
+    
+    if totalVotes >= (totalPeers * MinVotingPercentage / 100) {
+        // Calculate result
+        approvals := 0
+        for _, approve := range voteState.Responses {
+            if approve {
+                approvals++
+            }
+        }
+
+        passed := (approvals * 100 / totalVotes) >= MinVotingPercentage
+        voteState.complete = true
+        qm.voteResults[resp.VoteID] = passed
+
+        // Signal vote completion
+        qm.voteComplete <- voteState.Vote
+    }
+}
+
+// validatePeerRemoval checks if a peer should be removed
+func (qm *QuorumManager) validatePeerRemoval(vote *Vote) bool {
+    // Check if peer has poor reputation
+    if rep, exists := qm.peerRep[peer.ID(vote.Target)]; exists {
+        if rep <= ReputationThreshold {
+            return true
+        }
+    }
+
+    // Validate evidence if provided
+    if len(vote.Evidence) > 0 {
+        // TODO: Implement evidence validation (e.g., cryptographic proof of bad behavior)
+        return true
+    }
+
+    return false
+}
+
+// validateFileRemoval checks if a file should be removed
+func (qm *QuorumManager) validateFileRemoval(vote *Vote) bool {
+    // TODO: Implement file content validation
+    return true
+}
+
+// validateRuleUpdate checks if a rule update should be approved
+func (qm *QuorumManager) validateRuleUpdate(vote *Vote) bool {
+    // TODO: Implement rule update validation
+    return false
+}
+
+// processVoteResults handles completed votes
+func (qm *QuorumManager) processVoteResults() {
+    for {
+        select {
+        case <-qm.ctx.Done():
+            return
+        case vote := <-qm.voteComplete:
+            qm.mu.RLock()
+            passed := qm.voteResults[vote.ID]
+            qm.mu.RUnlock()
+
+            if passed {
+                switch vote.Type {
+                case VoteRemovePeer:
+                    qm.peerBanned <- peer.ID(vote.Target)
+                case VoteRemoveFile:
+                    qm.fileRemoved <- vote.Target
+                case VoteUpdateRules:
+                    // TODO: Implement rule updates
+                }
+            }
+        }
+    }
+}
+
+// UpdatePeerReputation adjusts a peer's reputation score
+func (qm *QuorumManager) UpdatePeerReputation(id peer.ID, delta int) {
+    qm.mu.Lock()
+    defer qm.mu.Unlock()
+
+    current := qm.peerRep[id]
+    updated := current + delta
+
+    // Clamp reputation to valid range
+    if updated > MaxReputation {
+        updated = MaxReputation
+    } else if updated <= ReputationThreshold {
+        // Initiate removal vote if reputation drops too low
+        go qm.ProposeVote(VoteRemovePeer, string(id), "Low reputation score", nil)
+    }
+
+    qm.peerRep[id] = updated
+}
+
+// isVoteResponse determines if a message is a vote response
+func isVoteResponse(data []byte) bool {
+    var msg struct {
+        VoteID string `json:"vote_id"`
+    }
+    return json.Unmarshal(data, &msg) == nil && msg.VoteID != ""
+}

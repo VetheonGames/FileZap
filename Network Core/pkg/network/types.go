@@ -27,11 +27,20 @@ UpdatedAt       time.Time
 
 // NetworkEngine manages the P2P communication for FileZap
 type NetworkEngine struct {
-	ctx           context.Context
-	transportNode *NetworkNode // For chunk transfer via QUIC/UDP
-	metadataNode  *NetworkNode // For manifest sharing and health checks
-	manifests     *ManifestManager
-	chunkStore    *ChunkStore
+    ctx          context.Context
+    cancel       context.CancelFunc
+    mu           sync.RWMutex
+
+    // Network components
+    transportNode *NetworkNode // For chunk transfer via QUIC/UDP
+    metadataNode  *NetworkNode // For manifest sharing and health checks
+    gossipMgr     *GossipManager
+    quorum        *QuorumManager
+    validator     *ChunkValidator
+    
+    // Data management
+    manifests     *ManifestManager
+    chunkStore    *ChunkStore
 }
 
 // NetworkNode represents a libp2p node for either transport or metadata
@@ -61,9 +70,16 @@ type ManifestManager struct {
 
 // ChunkStore handles the storage and transfer of file chunks using QUIC
 type ChunkStore struct {
-	chunks    map[string][]byte
-	transfers *TransferManager
+    chunks     map[string][]byte
+    transfers  *TransferManager
+    totalSize  uint64
+    mu         sync.RWMutex
 }
+
+const (
+    maxChunkSize   = 100 * 1024 * 1024  // 100MB max chunk size
+    maxTotalSize   = 1024 * 1024 * 1024 // 1GB total storage limit
+)
 
 // TransferManager handles QUIC-based chunk transfers
 type TransferManager struct {

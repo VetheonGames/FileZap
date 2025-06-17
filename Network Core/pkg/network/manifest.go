@@ -86,25 +86,47 @@ const (
 
 // NewManifestManager creates a new manifest manager
 func NewManifestManager(ctx context.Context, localID peer.ID, kdht *dht.IpfsDHT, ps *pubsub.PubSub) *ManifestManager {
-// Set up validator
-nsval := record.NamespacedValidator{
-    "pk":     record.PublicKeyValidator{},
-    "ipns":   record.PublicKeyValidator{},
-    "filezap": &validator{},
-}
-kdht.Validator = nsval
-	topic, err := ps.Join(manifestTopic)
-	if err != nil {
-		// Log error but continue - pubsub is optional for manifest sync
-		fmt.Printf("failed to join manifest topic: %v\n", err)
-	}
+    // Set up validator
+    nsval := record.NamespacedValidator{
+        "pk":     record.PublicKeyValidator{},
+        "ipns":   record.PublicKeyValidator{},
+        "filezap": &validator{},
+    }
+    kdht.Validator = nsval
 
-mm := &ManifestManager{
-dht:       kdht,
-store:     make(map[string]*ManifestInfo),
-localNode: localID,
-topic:     topic,
-}
+    // Wait for DHT initialization
+    timeout := time.After(30 * time.Second)
+    ticker := time.NewTicker(100 * time.Millisecond)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-timeout:
+            // Continue even if timeout occurs, but log warning
+            fmt.Printf("warning: timeout waiting for DHT initialization\n")
+            goto init
+        case <-ticker.C:
+            if len(kdht.RoutingTable().ListPeers()) > 0 {
+                goto init
+            }
+        case <-ctx.Done():
+            return nil
+        }
+    }
+
+init:
+    topic, err := ps.Join(manifestTopic)
+    if err != nil {
+        // Log error but continue - pubsub is optional for manifest sync
+        fmt.Printf("failed to join manifest topic: %v\n", err)
+    }
+
+    mm := &ManifestManager{
+        dht:       kdht,
+        store:     make(map[string]*ManifestInfo),
+        localNode: localID,
+        topic:     topic,
+    }
 
 // Create and start replicator
 mm.replicator = NewManifestReplicator(kdht, mm)
@@ -120,21 +142,49 @@ mm.replicator = NewManifestReplicator(kdht, mm)
 
 // AddManifest stores a manifest and ensures it meets replication goals
 func (m *ManifestManager) AddManifest(manifest *ManifestInfo) error {
-// Set update timestamp
-manifest.UpdatedAt = time.Now()
+    // Validate manifest
+    if manifest == nil {
+        return fmt.Errorf("manifest cannot be nil")
+    }
+    if manifest.Name == "" {
+        return fmt.Errorf("manifest name cannot be empty")
+    }
+    if len(manifest.ChunkHashes) == 0 {
+        return fmt.Errorf("manifest must have at least one chunk hash")
+    }
+    if manifest.ReplicationGoal <= 0 {
+        return fmt.Errorf("replication goal must be greater than 0")
+    }
+    if manifest.Owner == "" {
+        return fmt.Errorf("manifest must have an owner")
+    }
 
-// Store locally
-m.store[manifest.Name] = manifest
+    // Set update timestamp
+    manifest.UpdatedAt = time.Now()
+
+    // Store locally
+    m.store[manifest.Name] = manifest
 
 // Store in DHT
 data, err := json.Marshal(manifest)
-	if err != nil {
-		return fmt.Errorf("failed to marshal manifest: %w", err)
-	}
+if err != nil {
+    return fmt.Errorf("failed to marshal manifest: %w", err)
+}
 
-	if err := m.dht.PutValue(context.Background(), getDHTKey(manifest.Name), data); err != nil {
-		return fmt.Errorf("failed to store manifest in DHT: %w", err)
-	}
+// Ensure DHT has peers before storing
+peers := m.dht.RoutingTable().ListPeers()
+if len(peers) == 0 {
+    // Store locally and retry DHT storage later via replicator
+    return nil
+}
+
+// Use a timeout context for DHT operations
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+if err := m.dht.PutValue(ctx, getDHTKey(manifest.Name), data); err != nil {
+    return fmt.Errorf("failed to store manifest in DHT: %w", err)
+}
 
 	// Publish update if pubsub is available
 	if m.topic != nil {

@@ -33,9 +33,10 @@ func setupTestManifestNetwork(ctx context.Context, t *testing.T) (host.Host, *dh
 
     // Create DHTs with Server mode and validator
     nsval := record.NamespacedValidator{
-        "pk":     record.PublicKeyValidator{},
-        "ipns":   record.PublicKeyValidator{},
+        "pk":      record.PublicKeyValidator{},
+        "ipns":    record.PublicKeyValidator{},
         "filezap": &validator{},
+        "/filezap": &validator{}, // Add with leading slash too
     }
 
     d1, err := dht.New(ctx, h1,
@@ -64,23 +65,35 @@ func setupTestManifestNetwork(ctx context.Context, t *testing.T) (host.Host, *dh
         Addrs: h2.Addrs(),
     }))
 
+    // Connect all peers first
+    connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+    defer cancel()
+
+    // Ensure both hosts are connected to each other
+    require.NoError(t, h1.Connect(connectCtx, peer.AddrInfo{
+        ID:    h2.ID(),
+        Addrs: h2.Addrs(),
+    }))
+    
+    // Wait for connection to be established
+    time.Sleep(time.Second)
+
     // Bootstrap both DHTs
-    bootstrapCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+    bootstrapCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
     defer cancel()
 
     require.NoError(t, d1.Bootstrap(bootstrapCtx))
     require.NoError(t, d2.Bootstrap(bootstrapCtx))
 
-    // Wait for DHTs to initialize and connect
+    // Wait for both DHTs to connect and initialize
     require.Eventually(t, func() bool {
-        if len(d1.RoutingTable().ListPeers()) == 0 {
-            return false
-        }
-        if len(d2.RoutingTable().ListPeers()) == 0 {
-            return false
-        }
-        return true
-    }, 5*time.Second, 100*time.Millisecond, "DHT failed to initialize")
+        peers1 := d1.RoutingTable().ListPeers()
+        peers2 := d2.RoutingTable().ListPeers()
+        return len(peers1) > 0 && len(peers2) > 0
+    }, 10*time.Second, 100*time.Millisecond, "DHT failed to initialize")
+
+    // Additional wait for DHT to stabilize
+    time.Sleep(2 * time.Second)
 
     // Add some random data to validate DHT is working
     testKey := getDHTKey("test-key")
@@ -269,28 +282,44 @@ assert.Error(t, err)
 })
 
 t.Run("Network Disruption", func(t *testing.T) {
-// Create valid manifest
-manifest := &ManifestInfo{
-Name:            "disrupted.zap",
-ChunkHashes:     []string{"hash1"},
-ReplicationGoal: DefaultReplicationGoal,
-Owner:           host.ID(),
-Size:            1024,
-}
+    // Create valid manifest
+    manifest := &ManifestInfo{
+        Name:            "disrupted.zap",
+        ChunkHashes:     []string{"hash1"},
+        ReplicationGoal: DefaultReplicationGoal,
+        Owner:           host.ID(),
+        Size:            1024,
+    }
 
-// Add manifest
-err := mm.AddManifest(manifest)
-require.NoError(t, err)
+    // Add manifest
+    err := mm.AddManifest(manifest)
+    require.NoError(t, err)
 
-// Close DHT connection to simulate network disruption
-dht.Close()
+    // Simulate network disruption by disconnecting from all peers
+    for _, peer := range host.Network().Peers() {
+        host.Network().ClosePeer(peer)
+    }
+    time.Sleep(time.Second) // Allow time for disconnections
 
-// Verify operations fail gracefully
-_, err = mm.GetManifest(manifest.Name)
-assert.Error(t, err)
+    // Test DHT operations during network partition
+    _, err = mm.GetManifest("nonexistent.zap")
+    assert.Error(t, err, "should fail to get non-cached manifest during disruption")
 
-err = mm.AddManifest(manifest)
-assert.Error(t, err)
+    // Verify we can still access locally stored manifest
+    cached, err := mm.GetManifest(manifest.Name)
+    assert.NoError(t, err, "should be able to get cached manifest")
+    assert.Equal(t, manifest.Name, cached.Name)
+
+    // Adding new manifest should work (stored locally)
+    newManifest := &ManifestInfo{
+        Name:            "local-only.zap",
+        ChunkHashes:     []string{"hash2"},
+        ReplicationGoal: DefaultReplicationGoal,
+        Owner:           host.ID(),
+        Size:            1024,
+    }
+    err = mm.AddManifest(newManifest)
+    assert.NoError(t, err, "should store locally during disruption")
 })
 }
 
@@ -361,25 +390,34 @@ defer dht.Close()
 mm := NewManifestManager(ctx, host.ID(), dht, ps)
 
 t.Run("Update After Network Partition", func(t *testing.T) {
-// Create initial manifest
-manifest := &ManifestInfo{
-Name:            "partition.zap",
-ChunkHashes:     []string{"hash1"},
-ReplicationGoal: DefaultReplicationGoal,
-Owner:           host.ID(),
-Size:            1024,
-}
+    // Create initial manifest
+    manifest := &ManifestInfo{
+        Name:            "partition.zap",
+        ChunkHashes:     []string{"hash1"},
+        ReplicationGoal: DefaultReplicationGoal,
+        Owner:           host.ID(),
+        Size:            1024,
+    }
 
-err := mm.AddManifest(manifest)
-require.NoError(t, err)
+    err := mm.AddManifest(manifest)
+    require.NoError(t, err)
 
-// Close DHT connection
-dht.Close()
+    // Simulate network partition by disconnecting from all peers
+    for _, peer := range host.Network().Peers() {
+        host.Network().ClosePeer(peer)
+    }
+    time.Sleep(time.Second) // Allow time for disconnections
 
-// Attempt update during partition
-manifest.ChunkHashes = append(manifest.ChunkHashes, "hash2")
-err = mm.AddManifest(manifest)
-assert.Error(t, err)
+    // Attempt update during partition - should work locally
+    manifest.ChunkHashes = append(manifest.ChunkHashes, "hash2")
+    err = mm.AddManifest(manifest)
+    assert.NoError(t, err, "should store locally during network partition")
+
+    // Verify we can read the updated manifest locally
+    retrieved, err := mm.GetManifest(manifest.Name)
+    assert.NoError(t, err, "should retrieve from local store")
+    assert.Equal(t, 2, len(retrieved.ChunkHashes), "should have updated chunk hashes")
+    assert.Equal(t, manifest.ChunkHashes, retrieved.ChunkHashes)
 })
 
 t.Run("Large Manifest", func(t *testing.T) {

@@ -100,11 +100,14 @@ engine1, engine2 := setupTestNetwork(t, ctx)
 defer engine1.Close()
 defer engine2.Close()
 
+now := time.Now()
 manifest := &ManifestInfo{
-Name:        "test.txt",
-Size:        1024,
-ChunkHashes: []string{"hash1", "hash2"},
-Owner:       engine1.GetTransportHost().ID(),
+    Name:            "test.txt",
+    Size:            1024,
+    ChunkHashes:     []string{"hash1", "hash2"},
+    Owner:           engine1.GetTransportHost().ID(),
+    UpdatedAt:       now,
+    ReplicationGoal: DefaultReplicationGoal,
 }
 
 chunks := map[string][]byte{
@@ -120,13 +123,35 @@ require.NoError(t, err)
 // Test retrieval from the same node
 retrievedManifest, retrievedChunks, err := engine1.GetZapFile(manifest.Name)
 require.NoError(t, err)
-assert.Equal(t, manifest, retrievedManifest)
+
+// Compare all fields except UpdatedAt
+assert.Equal(t, manifest.Name, retrievedManifest.Name)
+assert.Equal(t, manifest.Size, retrievedManifest.Size)
+assert.Equal(t, manifest.ChunkHashes, retrievedManifest.ChunkHashes)
+assert.Equal(t, manifest.Owner, retrievedManifest.Owner)
+assert.Equal(t, manifest.ReplicationGoal, retrievedManifest.ReplicationGoal)
+
+// Compare UpdatedAt with tolerance
+timeDiff := retrievedManifest.UpdatedAt.Sub(manifest.UpdatedAt)
+assert.True(t, timeDiff.Abs() < time.Second, "UpdatedAt times should be within 1 second")
+
 assert.Equal(t, chunks, retrievedChunks)
 
 // Test retrieval from a different node
 retrievedManifest, retrievedChunks, err = engine2.GetZapFile(manifest.Name)
 require.NoError(t, err)
-assert.Equal(t, manifest, retrievedManifest)
+
+// Compare all fields except UpdatedAt
+assert.Equal(t, manifest.Name, retrievedManifest.Name)
+assert.Equal(t, manifest.Size, retrievedManifest.Size)
+assert.Equal(t, manifest.ChunkHashes, retrievedManifest.ChunkHashes)
+assert.Equal(t, manifest.Owner, retrievedManifest.Owner)
+assert.Equal(t, manifest.ReplicationGoal, retrievedManifest.ReplicationGoal)
+
+// Compare UpdatedAt with tolerance
+timeDiff = retrievedManifest.UpdatedAt.Sub(manifest.UpdatedAt)
+assert.True(t, timeDiff.Abs() < time.Second, "UpdatedAt times should be within 1 second")
+
 assert.Equal(t, chunks, retrievedChunks)
 })
 
@@ -169,11 +194,22 @@ return engine1.transportNode.host.Network().Connectedness(node.GetTransportHost(
 }, 5*time.Second, 100*time.Millisecond)
 }
 
-// Test failed bootstrap
-invalidAddr, err := ma.NewMultiaddr("/ip4/127.0.0.1/tcp/1234/p2p/QmInvalid")
+// Test failed bootstrap with non-existent peer
+randBytes := make([]byte, 32)
+_, err = rand.Read(randBytes)
+require.NoError(t, err)
+
+privKey, _, err := crypto.GenerateECDSAKeyPair(rand.Reader)
+require.NoError(t, err)
+
+id, err := peer.IDFromPrivateKey(privKey)
+require.NoError(t, err)
+
+invalidAddr, err := ma.NewMultiaddr(fmt.Sprintf("/ip4/127.0.0.1/tcp/1234/p2p/%s", id))
 require.NoError(t, err)
 err = engine1.Bootstrap([]ma.Multiaddr{invalidAddr})
 assert.Error(t, err)
+assert.Contains(t, err.Error(), "failed to connect to bootstrap peer")
 }
 
 func TestConcurrentOperations(t *testing.T) {
@@ -190,10 +226,11 @@ done := make(chan bool, numOperations*2)
 for i := 0; i < numOperations; i++ {
 go func(i int) {
 manifest := &ManifestInfo{
-Name:        fmt.Sprintf("test%d.txt", i),
-Size:        1024,
-ChunkHashes: []string{fmt.Sprintf("hash%d", i)},
-Owner:       engine1.GetTransportHost().ID(),
+    Name:            fmt.Sprintf("test%d.txt", i),
+    Size:            1024,
+    ChunkHashes:     []string{fmt.Sprintf("hash%d", i)},
+    Owner:           engine1.GetTransportHost().ID(),
+    ReplicationGoal: DefaultReplicationGoal,
 }
 chunks := map[string][]byte{
 fmt.Sprintf("hash%d", i): []byte(fmt.Sprintf("data%d", i)),
@@ -230,10 +267,11 @@ ctx := context.Background()
 engine1, engine2 := setupTestNetwork(t, ctx)
 
 manifest := &ManifestInfo{
-Name:        "test.txt",
-Size:        1024,
-ChunkHashes: []string{"hash1"},
-Owner:       engine1.GetTransportHost().ID(),
+    Name:            "test.txt",
+    Size:            1024,
+    ChunkHashes:     []string{"hash1"},
+    Owner:           engine1.GetTransportHost().ID(),
+    ReplicationGoal: DefaultReplicationGoal,
 }
 chunks := map[string][]byte{"hash1": []byte("data")}
 

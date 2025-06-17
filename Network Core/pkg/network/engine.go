@@ -1,236 +1,273 @@
 package network
 
 import (
-	"context"
-	"fmt"
-	"time"
+    "context"
+    "fmt"
+    "time"
 
-	"github.com/libp2p/go-libp2p"
-	dht "github.com/libp2p/go-libp2p-kad-dht"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	"github.com/libp2p/go-libp2p/core/host"
-"github.com/libp2p/go-libp2p/core/peer"
-"github.com/libp2p/go-libp2p/p2p/security/noise"
-ma "github.com/multiformats/go-multiaddr"
+    "github.com/libp2p/go-libp2p/core/peer"
+    ma "github.com/multiformats/go-multiaddr"
 )
 
-// NewNetworkEngine creates a new P2P network engine
-func NewNetworkEngine(ctx context.Context) (*NetworkEngine, error) {
-// Create transport node for chunk transfer
-transportNode, err := newNetworkNode(ctx, []string{
-"/ip4/127.0.0.1/tcp/0",
-}, false)
-if err != nil {
-return nil, fmt.Errorf("failed to create transport node: %w", err)
+
+// NetworkConfig holds configuration for the network engine
+type NetworkConfig struct {
+    Transport     *TransportConfig
+    MetadataStore string
+    ChunkCacheDir string
 }
 
-// Create metadata node for manifest sharing
-metadataNode, err := newNetworkNode(ctx, []string{
-"/ip4/127.0.0.1/tcp/0",
-}, false)
-if err != nil {
-return nil, fmt.Errorf("failed to create metadata node: %w", err)
-}
-
-	// Initialize components
-	manifests := NewManifestManager(ctx, metadataNode.host.ID(), metadataNode.dht, metadataNode.pubsub)
-	chunkStore := NewChunkStore(transportNode.host)
-
-	return &NetworkEngine{
-		ctx:           ctx,
-		transportNode: transportNode,
-		metadataNode:  metadataNode,
-		manifests:     manifests,
-		chunkStore:    chunkStore,
-	}, nil
-}
-
-// newNetworkNode creates a new libp2p node with DHT and pubsub
-func newNetworkNode(ctx context.Context, listenAddrs []string, useQuic bool) (*NetworkNode, error) {
-opts := []libp2p.Option{
-libp2p.ListenAddrStrings(listenAddrs...),
-libp2p.Security(noise.ID, noise.New),
-libp2p.DefaultTransports,
-}
-
-// Create libp2p host
-	h, err := libp2p.New(opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create libp2p host: %w", err)
-	}
-
-// Create DHT
-kdht, err := dht.New(ctx, h, 
-    dht.Mode(dht.ModeServer),
-    dht.BootstrapPeers(dht.GetDefaultBootstrapPeerAddrInfos()...),
-    dht.ProtocolPrefix("/filezap"),
-)
-if err != nil {
-    return nil, fmt.Errorf("failed to create DHT: %w", err)
-}
-
-// Bootstrap the DHT with retry
-bootstrapCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-defer cancel()
-
-if err := kdht.Bootstrap(bootstrapCtx); err != nil {
-    return nil, fmt.Errorf("failed to bootstrap DHT: %w", err)
-}
-
-// Wait for at least one connection
-connected := make(chan struct{})
-go func() {
-    ticker := time.NewTicker(100 * time.Millisecond)
-    defer ticker.Stop()
-    for {
-        select {
-        case <-bootstrapCtx.Done():
-            return
-        case <-ticker.C:
-            if len(h.Network().Peers()) > 0 {
-                close(connected)
-                return
-            }
-        }
-    }
-}()
-
-select {
-case <-connected:
-    // Successfully connected
-case <-bootstrapCtx.Done():
-    if len(h.Network().Peers()) == 0 {
-        return nil, fmt.Errorf("failed to connect to any peers during bootstrap")
+// DefaultNetworkConfig returns default network settings
+func DefaultNetworkConfig() *NetworkConfig {
+    return &NetworkConfig{
+        Transport: DefaultTransportConfig(),
+        MetadataStore: "metadata",
+        ChunkCacheDir: "chunks",
     }
 }
 
-	// Create pubsub
-	ps, err := pubsub.NewGossipSub(ctx, h)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create pubsub: %w", err)
-	}
+// NewNetworkEngine creates a new network engine
+func NewNetworkEngine(ctx context.Context, cfg *NetworkConfig) (*NetworkEngine, error) {
+    ctx, cancel := context.WithCancel(ctx)
 
-	// Create overlay network
-	overlay := &OverlayNetwork{
-		neighbors: make(map[peer.ID]time.Time),
-		maxPeers:  50,
-	}
+    // Create transport network (QUIC-enabled)
+    transportNode, err := NewTransportNode(ctx, cfg.Transport)
+    if err != nil {
+        cancel()
+        return nil, fmt.Errorf("failed to create transport node: %w", err)
+    }
 
-	node := &NetworkNode{
-		host:    h,
-		dht:     kdht,
-		pubsub:  ps,
-		overlay: overlay,
-	}
-	overlay.node = node
+    // Create metadata network (TCP-based)
+    metadataCfg := *cfg.Transport
+    metadataCfg.EnableQUIC = false
+    metadataNode, err := NewTransportNode(ctx, &metadataCfg)
+    if err != nil {
+        transportNode.Close()
+        cancel()
+        return nil, fmt.Errorf("failed to create metadata node: %w", err)
+    }
 
-	return node, nil
+    // Initialize gossip manager for peer discovery
+    gossipMgr, err := NewGossipManager(ctx, transportNode.host, transportNode.pubsub)
+    if err != nil {
+        transportNode.Close()
+        metadataNode.Close()
+        cancel()
+        return nil, fmt.Errorf("failed to create gossip manager: %w", err)
+    }
+
+    // Initialize manifest manager
+    manifests := NewManifestManager(ctx, metadataNode.host.ID(), metadataNode.dht, metadataNode.pubsub)
+
+    // Initialize chunk store
+    chunkStore := NewChunkStore(transportNode.host)
+
+    // Initialize quorum manager
+    quorum, err := NewQuorumManager(ctx, transportNode.host, transportNode.pubsub, gossipMgr)
+    if err != nil {
+        transportNode.Close()
+        metadataNode.Close()
+        cancel()
+        return nil, fmt.Errorf("failed to create quorum manager: %w", err)
+    }
+
+    // Initialize chunk validator
+    validator := NewChunkValidator(ctx, quorum, chunkStore)
+
+    engine := &NetworkEngine{
+        ctx:           ctx,
+        cancel:        cancel,
+        transportNode: transportNode,
+        metadataNode:  metadataNode,
+        gossipMgr:     gossipMgr,
+        quorum:        quorum,
+        validator:     validator,
+        manifests:     manifests,
+        chunkStore:    chunkStore,
+    }
+
+    // Start monitoring network health
+    go engine.monitorNetwork()
+
+    return engine, nil
 }
 
-// Connect connects to a peer using their multiaddr on both transport and metadata networks
+// Connect connects to a peer on both transport and metadata networks
 func (e *NetworkEngine) Connect(addr ma.Multiaddr) error {
-	peerInfo, err := peer.AddrInfoFromP2pAddr(addr)
-	if err != nil {
-		return fmt.Errorf("invalid peer address: %w", err)
-	}
+    peerInfo, err := peer.AddrInfoFromP2pAddr(addr)
+    if err != nil {
+        return fmt.Errorf("invalid peer address: %w", err)
+    }
 
-	// Connect on transport network
-	if err := e.transportNode.host.Connect(e.ctx, *peerInfo); err != nil {
-		return fmt.Errorf("failed to connect transport: %w", err)
-	}
+    // Connect on transport network
+    if err := e.transportNode.host.Connect(e.ctx, *peerInfo); err != nil {
+        return fmt.Errorf("failed to connect transport: %w", err)
+    }
 
-	// Connect on metadata network
-	if err := e.metadataNode.host.Connect(e.ctx, *peerInfo); err != nil {
-		return fmt.Errorf("failed to connect metadata: %w", err)
-	}
+    // Connect on metadata network
+    if err := e.metadataNode.host.Connect(e.ctx, *peerInfo); err != nil {
+        return fmt.Errorf("failed to connect metadata: %w", err)
+    }
 
-	return nil
-}
+    // Update gossip manager
+    e.gossipMgr.updatePeerInfo(&PeerGossipInfo{
+        ID:        peerInfo.ID,
+        LastSeen:  time.Now(),
+    })
 
-// Bootstrap connects to bootstrap nodes to join both networks
-func (e *NetworkEngine) Bootstrap(bootstrapPeers []ma.Multiaddr) error {
-	for _, addr := range bootstrapPeers {
-		if err := e.Connect(addr); err != nil {
-			return fmt.Errorf("failed to connect to bootstrap peer %s: %w", addr, err)
-		}
-
-		// Update overlay network neighbors
-		peerInfo, _ := peer.AddrInfoFromP2pAddr(addr)
-		e.transportNode.overlay.AddNeighbor(peerInfo.ID)
-		e.metadataNode.overlay.AddNeighbor(peerInfo.ID)
-	}
-	return nil
+    return nil
 }
 
 // AddZapFile adds a new .zap file to the network
 func (e *NetworkEngine) AddZapFile(manifest *ManifestInfo, chunks map[string][]byte) error {
-	// Store chunks in the chunk store
-	for hash, data := range chunks {
-		e.chunkStore.Store(hash, data)
-	}
+    // Validate all chunks before storing
+    for hash, data := range chunks {
+        if result := e.validator.ValidateChunk(data, hash, e.transportNode.host.ID()); result != ValidationSuccess {
+            return fmt.Errorf("chunk validation failed: %v", result)
+        }
+        e.chunkStore.Store(hash, data)
+    }
 
-	// Store and replicate manifest
-	return e.manifests.AddManifest(manifest)
+    // Store and replicate manifest
+    return e.manifests.AddManifest(manifest)
 }
 
 // GetZapFile retrieves a .zap file from the network
 func (e *NetworkEngine) GetZapFile(name string) (*ManifestInfo, map[string][]byte, error) {
-	// Get manifest from DHT
-	manifest, err := e.manifests.GetManifest(name)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get manifest: %w", err)
-	}
+    // Get manifest from DHT
+    manifest, err := e.manifests.GetManifest(name)
+    if err != nil {
+        return nil, nil, fmt.Errorf("failed to get manifest: %w", err)
+    }
 
-	// Download chunks
-	chunks := make(map[string][]byte)
-	for _, hash := range manifest.ChunkHashes {
-		data, err := e.chunkStore.transfers.Download(manifest.Owner, hash)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to download chunk %s: %w", hash, err)
-		}
-		chunks[hash] = data
-	}
+    // Download and validate chunks
+    chunks := make(map[string][]byte)
+    for _, hash := range manifest.ChunkHashes {
+        // Check if we own this chunk locally first
+        if data, exists := e.chunkStore.Get(hash); exists {
+            // Validate even local chunks
+            if result := e.validator.ValidateChunk(data, hash, e.transportNode.host.ID()); result == ValidationSuccess {
+                chunks[hash] = data
+                continue
+            }
+        }
 
-	return manifest, chunks, nil
+        // Download from remote peer
+        data, err := e.chunkStore.transfers.Download(manifest.Owner, hash)
+        if err != nil {
+            return nil, nil, fmt.Errorf("failed to download chunk %s: %w", hash, err)
+        }
+
+        // Validate downloaded chunk
+        if result := e.validator.ValidateChunk(data, hash, manifest.Owner); result != ValidationSuccess {
+            return nil, nil, fmt.Errorf("downloaded chunk validation failed: %v", result)
+        }
+
+        chunks[hash] = data
+    }
+
+    return manifest, chunks, nil
 }
 
-// GetTransportHost returns the transport network's libp2p host instance
-func (e *NetworkEngine) GetTransportHost() host.Host {
-	return e.transportNode.host
+// ReportBadFile reports a malicious file to the network
+func (e *NetworkEngine) ReportBadFile(name string, reason string) error {
+    manifest, err := e.manifests.GetManifest(name)
+    if err != nil {
+        return fmt.Errorf("failed to get manifest: %w", err)
+    }
+
+    // Propose vote to remove the file
+    if err := e.quorum.ProposeVote(VoteRemoveFile, name, reason, nil); err != nil {
+        return fmt.Errorf("failed to propose file removal: %w", err)
+    }
+
+    // Update reputation of the file owner
+    e.quorum.UpdatePeerReputation(manifest.Owner, -20)
+
+    return nil
 }
 
-// GetMetadataHost returns the metadata network's libp2p host instance
-func (e *NetworkEngine) GetMetadataHost() host.Host {
-	return e.metadataNode.host
+// monitorNetwork monitors network health and peer behavior
+func (e *NetworkEngine) monitorNetwork() {
+    ticker := time.NewTicker(time.Minute)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-e.ctx.Done():
+            return
+        case <-ticker.C:
+            e.checkPeerHealth()
+        case id := <-e.quorum.peerBanned:
+            e.handleBannedPeer(id)
+        case name := <-e.quorum.fileRemoved:
+            e.handleRemovedFile(name)
+        }
+    }
+}
+
+// checkPeerHealth checks the health of connected peers
+func (e *NetworkEngine) checkPeerHealth() {
+    peers := e.gossipMgr.GetPeers()
+    for _, info := range peers {
+        // Check if peer is responsive
+        if time.Since(info.LastSeen) > time.Hour {
+            e.quorum.UpdatePeerReputation(info.ID, -1)
+        }
+
+        // Check peer's uptime
+        if info.Uptime < 50 {
+            e.quorum.UpdatePeerReputation(info.ID, -1)
+        }
+
+        // Check response time
+        if info.ResponseTime > 1000 { // >1s average response
+            e.quorum.UpdatePeerReputation(info.ID, -1)
+        }
+    }
+}
+
+// handleBannedPeer handles cleanup when a peer is banned
+func (e *NetworkEngine) handleBannedPeer(id peer.ID) {
+
+    // Disconnect from peer
+    if err := e.transportNode.host.Network().ClosePeer(id); err != nil {
+        return
+    }
+    if err := e.metadataNode.host.Network().ClosePeer(id); err != nil {
+        return
+    }
+
+    // Remove stored chunks from banned peer
+    // TODO: Implement chunk cleanup
+}
+
+// handleRemovedFile handles cleanup when a file is removed
+func (e *NetworkEngine) handleRemovedFile(name string) {
+
+    // Remove manifest
+    if manifest, err := e.manifests.GetManifest(name); err == nil {
+        // Remove associated chunks
+        for _, hash := range manifest.ChunkHashes {
+            e.chunkStore.Remove(hash)
+        }
+    }
 }
 
 // Close shuts down the network engine
 func (e *NetworkEngine) Close() error {
-	if err := e.transportNode.dht.Close(); err != nil {
-		return fmt.Errorf("failed to close transport DHT: %w", err)
-	}
-	if err := e.transportNode.host.Close(); err != nil {
-		return fmt.Errorf("failed to close transport host: %w", err)
-	}
-	if err := e.metadataNode.dht.Close(); err != nil {
-		return fmt.Errorf("failed to close metadata DHT: %w", err)
-	}
-	if err := e.metadataNode.host.Close(); err != nil {
-		return fmt.Errorf("failed to close metadata host: %w", err)
-	}
-	return nil
-}
+    e.cancel()
 
-// AddNeighbor adds a peer to the overlay network
-func (o *OverlayNetwork) AddNeighbor(p peer.ID) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
+    var errs []error
+    if err := e.transportNode.Close(); err != nil {
+        errs = append(errs, fmt.Errorf("failed to close transport node: %w", err))
+    }
+    if err := e.metadataNode.Close(); err != nil {
+        errs = append(errs, fmt.Errorf("failed to close metadata node: %w", err))
+    }
 
-	// Only add if we haven't reached max peers
-	if len(o.neighbors) < o.maxPeers {
-		if err := o.node.host.Network().ClosePeer(p); err != nil {
-			return
-		}
-		o.neighbors[p] = time.Now()
-	}
+    if len(errs) > 0 {
+        return fmt.Errorf("errors during shutdown: %v", errs)
+    }
+    return nil
 }
