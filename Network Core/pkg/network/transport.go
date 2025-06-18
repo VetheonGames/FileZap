@@ -17,6 +17,7 @@ import (
 // TransportConfig holds configuration for network transport
 type TransportConfig struct {
     ListenAddrs     []string
+    ListenPort      int
     EnableQUIC      bool
     EnableTCP       bool
     EnableRelay     bool
@@ -42,18 +43,27 @@ func DefaultTransportConfig() *TransportConfig {
             "/ip6/::/tcp/0",
             "/ip6/::/udp/0/quic",
         },
+        ListenPort:      0,
         EnableQUIC:      true,
         EnableTCP:       true,
         EnableRelay:     true,
         EnableAutoRelay: true,
         EnableHolePunch: true,
         QUICOpts: QUICOptions{
-            MaxStreams:       100,
+            MaxStreams:      100,
             KeepAlivePeriod: 30 * time.Second,
             HandshakeTimeout: 10 * time.Second,
             IdleTimeout:     60 * time.Second,
         },
     }
+}
+
+// NetworkNode represents a network node with transport capabilities
+type NetworkNode struct {
+    host     host.Host
+    dht      *dht.IpfsDHT
+    pubsub   *pubsub.PubSub
+    overlay  *OverlayNetwork
 }
 
 // NewTransportNode creates a new libp2p host with the specified transport configuration
@@ -85,8 +95,6 @@ func NewTransportNode(ctx context.Context, cfg *TransportConfig) (*NetworkNode, 
         dht.ProtocolPrefix("/filezap"),
     }
 
-    // Always start in server mode
-
     kdht, err := dht.New(ctx, h, dhtOpts...)
     if err != nil {
         h.Close()
@@ -117,14 +125,30 @@ func NewTransportNode(ctx context.Context, cfg *TransportConfig) (*NetworkNode, 
     return node, nil
 }
 
+// Close shuts down the network node
+func (n *NetworkNode) Close() error {
+    var errs []error
+    if err := n.pubsub.Close(); err != nil {
+        errs = append(errs, err)
+    }
+    if err := n.dht.Close(); err != nil {
+        errs = append(errs, err)
+    }
+    if err := n.host.Close(); err != nil {
+        errs = append(errs, err)
+    }
+    if len(errs) > 0 {
+        return fmt.Errorf("errors closing node: %v", errs)
+    }
+    return nil
+}
+
 // bootstrapDHT bootstraps the DHT with retries
 func bootstrapDHT(ctx context.Context, kdht *dht.IpfsDHT) error {
-    // Start DHT in server mode
     if err := kdht.Bootstrap(ctx); err != nil {
         return fmt.Errorf("failed to bootstrap DHT: %w", err)
     }
 
-    // Wait for initial peer discovery
     timeout := time.After(30 * time.Second)
     ticker := time.NewTicker(time.Second)
     defer ticker.Stop()
@@ -154,7 +178,6 @@ func createPubSub(ctx context.Context, h host.Host, quicEnabled bool) (*pubsub.P
     }
 
     if quicEnabled {
-        // QUIC-optimized settings
         opts = append(opts,
             pubsub.WithMaxMessageSize(10 * 1024 * 1024), // 10MB max message size
             pubsub.WithValidateQueueSize(256),
