@@ -3,6 +3,7 @@ package network
 import (
     "context"
     "fmt"
+    "sync"
     "time"
 
     "github.com/libp2p/go-libp2p"
@@ -12,31 +13,103 @@ import (
     dht "github.com/libp2p/go-libp2p-kad-dht"
     pubsub "github.com/libp2p/go-libp2p-pubsub"
     libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
+
+    "github.com/VetheonGames/FileZap/NetworkCore/pkg/network/api"
 )
 
-// TransportConfig holds configuration for network transport
-type TransportConfig struct {
-    ListenAddrs     []string
-    ListenPort      int
-    EnableQUIC      bool
-    EnableTCP       bool
-    EnableRelay     bool
-    EnableAutoRelay bool
-    EnableHolePunch bool
-    QUICOpts        QUICOptions
+// OverlayNetwork manages peer connections in the network overlay
+type OverlayNetwork struct {
+    neighbors map[peer.ID]time.Time
+    maxPeers int
+    mu       sync.RWMutex
 }
 
-// QUICOptions configures QUIC transport behavior
-type QUICOptions struct {
-    MaxStreams          uint32
-    KeepAlivePeriod    time.Duration
-    HandshakeTimeout   time.Duration
-    IdleTimeout        time.Duration
+// pubSubAdapter wraps pubsub.PubSub to implement the PubSub interface
+type pubSubAdapter struct {
+    *pubsub.PubSub
+}
+
+// Publish implements the PubSub interface
+func (p *pubSubAdapter) Publish(topic string, data []byte) error {
+    return p.PubSub.Publish(topic, data)
+}
+
+// Subscribe implements the PubSub interface
+func (p *pubSubAdapter) Subscribe(topic string) (Subscription, error) {
+    t, err := p.PubSub.Join(topic)
+    if err != nil {
+        return nil, err
+    }
+    sub, err := t.Subscribe()
+    if err != nil {
+        t.Close()
+        return nil, err
+    }
+    return &subscriptionAdapter{sub, t}, nil
+}
+
+// subscriptionAdapter wraps pubsub.Subscription to implement the Subscription interface
+type subscriptionAdapter struct {
+    sub *pubsub.Subscription
+    topic *pubsub.Topic
+}
+
+// Next implements the Subscription interface
+func (s *subscriptionAdapter) Next() (Message, error) {
+    msg, err := s.sub.Next(context.Background())
+    if err != nil {
+        return nil, err
+    }
+    return &messageAdapter{msg}, nil
+}
+
+// Cancel implements the Subscription interface
+func (s *subscriptionAdapter) Cancel() {
+    s.sub.Cancel()
+    s.topic.Close()
+}
+
+// messageAdapter wraps pubsub.Message to implement the Message interface
+type messageAdapter struct {
+    *pubsub.Message
+}
+
+func (m *messageAdapter) Data() []byte {
+    return m.Message.Data
+}
+
+func (m *messageAdapter) From() peer.ID {
+    return m.Message.ReceivedFrom
+}
+
+func (m *messageAdapter) Topics() []string {
+    if m.Message.Topic == nil {
+        return nil
+    }
+    return []string{*m.Message.Topic}
+}
+
+// dhtAdapter wraps dht.IpfsDHT to implement the DHT interface
+type dhtAdapter struct {
+    *dht.IpfsDHT
+}
+
+// Bootstrap implements the DHT interface
+func (d *dhtAdapter) Bootstrap(ctx context.Context) error {
+    return d.IpfsDHT.Bootstrap(ctx)
+}
+
+// transportNode implements the NetworkNode interface
+type transportNode struct {
+    host     host.Host
+    dht      *dhtAdapter  
+    pubsub   *pubSubAdapter
+    overlay  *OverlayNetwork
 }
 
 // DefaultTransportConfig returns default transport settings
-func DefaultTransportConfig() *TransportConfig {
-    return &TransportConfig{
+func DefaultTransportConfig() *api.TransportConfig {
+    return &api.TransportConfig{
         ListenAddrs: []string{
             "/ip4/0.0.0.0/tcp/0",
             "/ip4/0.0.0.0/udp/0/quic",
@@ -49,7 +122,7 @@ func DefaultTransportConfig() *TransportConfig {
         EnableRelay:     true,
         EnableAutoRelay: true,
         EnableHolePunch: true,
-        QUICOpts: QUICOptions{
+        QUICOpts: api.QUICOptions{
             MaxStreams:      100,
             KeepAlivePeriod: 30 * time.Second,
             HandshakeTimeout: 10 * time.Second,
@@ -58,16 +131,8 @@ func DefaultTransportConfig() *TransportConfig {
     }
 }
 
-// NetworkNode represents a network node with transport capabilities
-type NetworkNode struct {
-    host     host.Host
-    dht      *dht.IpfsDHT
-    pubsub   *pubsub.PubSub
-    overlay  *OverlayNetwork
-}
-
 // NewTransportNode creates a new libp2p host with the specified transport configuration
-func NewTransportNode(ctx context.Context, cfg *TransportConfig) (*NetworkNode, error) {
+func NewTransportNode(ctx context.Context, cfg *api.TransportConfig) (*transportNode, error) {
     opts := []libp2p.Option{
         libp2p.ListenAddrStrings(cfg.ListenAddrs...),
         libp2p.Security(noise.ID, noise.New),
@@ -115,22 +180,34 @@ func NewTransportNode(ctx context.Context, cfg *TransportConfig) (*NetworkNode, 
         return nil, err
     }
 
-    node := &NetworkNode{
+    node := &transportNode{
         host:    h,
-        dht:     kdht,
-        pubsub:  ps,
+        dht:     &dhtAdapter{kdht},
+        pubsub:  &pubSubAdapter{ps},
         overlay: NewOverlayNetwork(h.ID()),
     }
 
     return node, nil
 }
 
+// GetHost returns the libp2p host
+func (n *transportNode) GetHost() host.Host {
+    return n.host
+}
+
+// GetDHT returns the DHT instance
+func (n *transportNode) GetDHT() DHT {
+    return n.dht
+}
+
+// GetPubSub returns the pubsub instance
+func (n *transportNode) GetPubSub() PubSub {
+    return n.pubsub
+}
+
 // Close shuts down the network node
-func (n *NetworkNode) Close() error {
+func (n *transportNode) Close() error {
     var errs []error
-    if err := n.pubsub.Close(); err != nil {
-        errs = append(errs, err)
-    }
     if err := n.dht.Close(); err != nil {
         errs = append(errs, err)
     }

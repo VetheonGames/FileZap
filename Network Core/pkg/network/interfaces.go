@@ -1,11 +1,13 @@
 package network
 
 import (
+    "context"
+
     "github.com/libp2p/go-libp2p/core/host"
     "github.com/libp2p/go-libp2p/core/peer"
     ma "github.com/multiformats/go-multiaddr"
 
-    "github.com/VetheonGames/FileZap/NetworkCore/pkg/vpn"
+    "github.com/VetheonGames/FileZap/NetworkCore/pkg/network/api"
 )
 
 // NetworkEngine defines the main network engine interface
@@ -44,7 +46,7 @@ type NetworkNode interface {
 
 // DHT represents a distributed hash table
 type DHT interface {
-    Bootstrap(ctx Context) error
+    Bootstrap(ctx context.Context) error
     Close() error
 }
 

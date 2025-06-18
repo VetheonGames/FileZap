@@ -9,24 +9,18 @@ import (
     "github.com/libp2p/go-libp2p/core/peer"
     ma "github.com/multiformats/go-multiaddr"
 
+    "github.com/VetheonGames/FileZap/NetworkCore/pkg/network/api"
     "github.com/VetheonGames/FileZap/NetworkCore/pkg/vpn"
 )
 
-// NetworkConfig holds configuration for the network engine
-type NetworkConfig struct {
-    Transport     *TransportConfig
-    MetadataStore string
-    ChunkCacheDir string
-    VPN          *VPNConfig
-}
-
 // DefaultNetworkConfig returns default network settings
-func DefaultNetworkConfig() *NetworkConfig {
-    return &NetworkConfig{
-        Transport:     DefaultTransportConfig(),
+func DefaultNetworkConfig() *api.NetworkConfig {
+    transport := DefaultTransportConfig()
+    return &api.NetworkConfig{
+        Transport:     *transport,
         MetadataStore: "metadata",
         ChunkCacheDir: "chunks",
-        VPN:          DefaultVPNConfig(),
+        VPNConfig:    DefaultVPNConfig(),
     }
 }
 
@@ -34,8 +28,8 @@ func DefaultNetworkConfig() *NetworkConfig {
 type NetworkEngine struct {
     ctx           context.Context
     cancel        context.CancelFunc
-    transportNode *NetworkNode
-    metadataNode  *NetworkNode
+    transportNode *transportNode
+    metadataNode  *transportNode
     gossipMgr     *GossipManager
     quorum        *QuorumManager
     validator     *ChunkValidator
@@ -46,18 +40,28 @@ type NetworkEngine struct {
 }
 
 // NewNetworkEngine creates a new network engine
-func NewNetworkEngine(ctx context.Context, cfg *NetworkConfig) (*NetworkEngine, error) {
+func NewNetworkEngine(ctx context.Context, cfg *api.NetworkConfig) (*NetworkEngine, error) {
     ctx, cancel := context.WithCancel(ctx)
 
     // Create transport network (QUIC-enabled)
-    transportNode, err := NewTransportNode(ctx, cfg.Transport)
+    transportCfg := &api.TransportConfig{
+        ListenAddrs:     cfg.Transport.ListenAddrs,
+        ListenPort:      cfg.Transport.ListenPort,
+        EnableQUIC:      cfg.Transport.EnableQUIC,
+        EnableTCP:       cfg.Transport.EnableTCP,
+        EnableRelay:     cfg.Transport.EnableRelay,
+        EnableAutoRelay: cfg.Transport.EnableAutoRelay,
+        EnableHolePunch: cfg.Transport.EnableHolePunch,
+        QUICOpts:        cfg.Transport.QUICOpts,
+    }
+    transportNode, err := NewTransportNode(ctx, transportCfg)
     if err != nil {
         cancel()
         return nil, fmt.Errorf("failed to create transport node: %w", err)
     }
 
     // Create metadata network (TCP-based)
-    metadataCfg := *cfg.Transport
+    metadataCfg := *transportCfg
     metadataCfg.EnableQUIC = false
     metadataNode, err := NewTransportNode(ctx, &metadataCfg)
     if err != nil {
@@ -106,8 +110,8 @@ func NewNetworkEngine(ctx context.Context, cfg *NetworkConfig) (*NetworkEngine, 
     }
 
     // Initialize VPN if enabled
-    if cfg.VPN != nil && cfg.VPN.Enabled {
-        if err := engine.initVPN(ctx, transportNode.host, cfg.VPN); err != nil {
+    if cfg.VPNConfig != nil && cfg.VPNConfig.Enabled {
+        if err := engine.initVPN(ctx, transportNode.host, cfg.VPNConfig); err != nil {
             engine.Close()
             return nil, fmt.Errorf("failed to initialize VPN: %w", err)
         }
