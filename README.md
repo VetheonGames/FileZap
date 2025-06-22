@@ -2,6 +2,7 @@
 
 > Note about the Developer: I am a new dad, and work full time. So I only work on coding projects on the weekend (when I have nothing else going on) please be patient with getting replies on IRC/Telegram/Issues!
 
+# !! A LOT OF THIS README IS NOW INCORRECT. IT WILL BE UPDATED SOON !!
 
 
 FileZap is a decentralized, cryptographically secured file-splitting and sharing system. It lets users encrypt, divide, and distribute files into redundant chunks across a peer-to-peer network. The goal is to ensure that files uploaded to the network are never lost, even if individual peers go offline, and are impossible to understand without proper authorization.
