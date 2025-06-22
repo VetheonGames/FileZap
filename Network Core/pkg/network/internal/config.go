@@ -2,6 +2,8 @@ package internal
 
 import (
     "time"
+
+    "github.com/VetheonGames/FileZap/NetworkCore/pkg/network/api"
 )
 
 // NetworkConfig holds the internal network configuration
@@ -9,7 +11,7 @@ type NetworkConfig struct {
     Transport     TransportConfig
     MetadataStore string
     ChunkCacheDir string
-    VPN          *VPNConfig
+    VPN          *api.VPNConfig
 }
 
 // TransportConfig holds internal transport configuration
@@ -32,14 +34,6 @@ type QUICOptions struct {
     IdleTimeout      time.Duration
 }
 
-// VPNConfig holds VPN configuration
-type VPNConfig struct {
-    Enabled       bool
-    NetworkCIDR   string
-    InterfaceName string
-    NetworkKey    string
-}
-
 // Default values for various settings
 const (
     DefaultMaxStreams        = 100
@@ -48,12 +42,21 @@ const (
     DefaultIdleTimeout     = 60 * time.Second
 )
 
-// DefaultVPNConfig returns default VPN settings
-func DefaultVPNConfig() *VPNConfig {
-    return &VPNConfig{
-        Enabled:       false,
-        NetworkCIDR:   "10.42.0.0/16",
-        InterfaceName: "tun0",
-        NetworkKey:    "",
+// DefaultConfig returns a new NetworkConfig with default values
+func DefaultConfig() *NetworkConfig {
+    return &NetworkConfig{
+        Transport: TransportConfig{
+            EnableQUIC: true,
+            EnableTCP:  true,
+            QUICOpts: QUICOptions{
+                MaxStreams:       DefaultMaxStreams,
+                KeepAlivePeriod:  DefaultKeepAlivePeriod,
+                HandshakeTimeout: DefaultHandshakeTimeout,
+                IdleTimeout:      DefaultIdleTimeout,
+            },
+        },
+        MetadataStore: "metadata",
+        ChunkCacheDir: "chunks",
+        VPN:          nil,  // VPN is disabled by default
     }
 }

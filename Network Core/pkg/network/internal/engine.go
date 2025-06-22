@@ -10,6 +10,7 @@ import (
     ma "github.com/multiformats/go-multiaddr"
 
     "github.com/VetheonGames/FileZap/NetworkCore/pkg/vpn"
+    "github.com/VetheonGames/FileZap/NetworkCore/pkg/network/api"
 )
 
 // NetworkEngine represents the core network engine
@@ -167,20 +168,22 @@ func (e *networkEngine) GetVPNManager() *vpn.VPNManager {
     return e.vpnManager
 }
 
-func (e *networkEngine) GetVPNStatus() *VPNStatus {
+func (e *networkEngine) GetVPNStatus() *api.VPNStatus {
     if e.vpnManager == nil {
-        return &VPNStatus{Connected: false}
+        return &api.VPNStatus{Connected: false}
     }
 
     peers := e.vpnManager.GetPeers()
-    activePeers := make([]string, len(peers))
+    activePeers := make([]api.VPNPeer, len(peers))
     for i, p := range peers {
-        activePeers[i] = p.String()
+        activePeers[i] = api.VPNPeer{
+            ID: p.String(),
+            IP: "", // Will be populated by the VPN manager
+        }
     }
 
-    return &VPNStatus{
+    return &api.VPNStatus{
         Connected:   true,
-        LocalIP:     e.vpnManager.GetLocalIP(),
         PeerCount:   len(peers),
         ActivePeers: activePeers,
     }

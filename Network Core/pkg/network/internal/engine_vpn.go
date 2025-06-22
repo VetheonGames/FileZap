@@ -6,9 +6,10 @@ import (
 
     "github.com/libp2p/go-libp2p/core/host"
     "github.com/VetheonGames/FileZap/NetworkCore/pkg/vpn"
+    "github.com/VetheonGames/FileZap/NetworkCore/pkg/network/api"
 )
 
-func (e *networkEngine) initVPN(ctx context.Context, h host.Host, cfg *VPNConfig) error {
+func (e *networkEngine) initVPN(ctx context.Context, h host.Host, cfg *api.VPNConfig) error {
     // Convert config
     vpnConfig := vpn.DefaultConfig()
     vpnConfig.NetworkCIDR = cfg.NetworkCIDR

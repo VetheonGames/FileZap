@@ -134,7 +134,6 @@ func (v *VPNManager) Close() error {
     return nil
 }
 
-// calculatePeerIP generates a deterministic IP address for a peer
 // GetLocalIP returns this peer's virtual IP address
 func (v *VPNManager) GetLocalIP() string {
     return v.tun.config.PeerIP.String()

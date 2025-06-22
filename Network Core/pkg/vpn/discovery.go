@@ -2,88 +2,89 @@ package vpn
 
 import (
     "context"
-    "crypto/sha256"
     "encoding/json"
     "fmt"
     "sync"
     "time"
 
+    dht "github.com/libp2p/go-libp2p-kad-dht"
     "github.com/libp2p/go-libp2p/core/host"
     "github.com/libp2p/go-libp2p/core/peer"
-    dht "github.com/libp2p/go-libp2p-kad-dht"
     pubsub "github.com/libp2p/go-libp2p-pubsub"
 )
 
 const (
-    // Topic name for peer announcements
-    announcementTopic = "vpn-peers"
+    // Topic name for VPN peer discovery
+    discoveryTopic = "filezap-vpn-discovery"
     
-    // How often to republish peer info
-    announcementInterval = 1 * time.Minute
+    // Announcement interval
+    announceInterval = 30 * time.Second
     
-    // How long to consider peer info valid
-    peerTTL = 2 * time.Minute
+    // Peer timeout
+    peerTimeout = 2 * time.Minute
 )
 
-// PeerInfo represents the information shared about a peer
+// Discovery handles VPN peer discovery and announcements
+type Discovery struct {
+    host      host.Host
+    dht       *dht.IpfsDHT
+    ps        *pubsub.PubSub
+    topic     *pubsub.Topic
+    sub       *pubsub.Subscription
+    vpn       *VPNManager
+    peerInfo  PeerInfo
+    peers     sync.Map
+    ctx       context.Context
+    cancel    context.CancelFunc
+}
+
+// PeerInfo contains information about a VPN peer
 type PeerInfo struct {
     PeerID    peer.ID `json:"peer_id"`
     VirtualIP string  `json:"virtual_ip"`
     Timestamp int64   `json:"timestamp"`
 }
 
-// Discovery manages peer discovery using DHT and pubsub
-type Discovery struct {
-    ctx       context.Context
-    host      host.Host
-    dht       *dht.IpfsDHT
-    pubsub    *pubsub.PubSub
-    topic     *pubsub.Topic
-    sub       *pubsub.Subscription
-    vpn       *VPNManager
-    peerInfo  PeerInfo
-    mu        sync.RWMutex
-    cancel    context.CancelFunc
-}
-
 // NewDiscovery creates a new peer discovery service
-func NewDiscovery(ctx context.Context, h host.Host, dht *dht.IpfsDHT, ps *pubsub.PubSub, vpn *VPNManager) (*Discovery, error) {
+func NewDiscovery(ctx context.Context, h host.Host, d *dht.IpfsDHT, ps *pubsub.PubSub, vpn *VPNManager) (*Discovery, error) {
     // Create discovery context
-    dctx, cancel := context.WithCancel(ctx)
-    
+    ctx, cancel := context.WithCancel(ctx)
+
     // Join pubsub topic
-    topic, err := ps.Join(announcementTopic)
+    topic, err := ps.Join(discoveryTopic)
     if err != nil {
         cancel()
         return nil, fmt.Errorf("failed to join topic: %w", err)
     }
-    
+
     // Subscribe to topic
     sub, err := topic.Subscribe()
     if err != nil {
         cancel()
         topic.Close()
-        return nil, fmt.Errorf("failed to subscribe to topic: %w", err)
+        return nil, fmt.Errorf("failed to subscribe: %w", err)
     }
 
-    d := &Discovery{
-        ctx:     dctx,
+    disc := &Discovery{
         host:    h,
-        dht:     dht,
-        pubsub:  ps,
+        dht:     d,
+        ps:      ps,
         topic:   topic,
         sub:     sub,
         vpn:     vpn,
+        ctx:     ctx,
         cancel:  cancel,
+        peerInfo: PeerInfo{
+            PeerID:    h.ID(),
+            VirtualIP: vpn.GetLocalIP(),
+        },
     }
 
-    // Start message handler
-    go d.handleMessages()
-    
-    // Start periodic announcements
-    go d.announceRoutine()
+    // Start announcement and message handling
+    go disc.announcePeriodically()
+    go disc.handleMessages()
 
-    return d, nil
+    return disc, nil
 }
 
 // Close shuts down the discovery service
@@ -93,13 +94,42 @@ func (d *Discovery) Close() error {
     return d.topic.Close()
 }
 
-// handleMessages processes incoming peer announcements
+func (d *Discovery) announcePeriodically() {
+    ticker := time.NewTicker(announceInterval)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-d.ctx.Done():
+            return
+        case <-ticker.C:
+            d.announce()
+        }
+    }
+}
+
+func (d *Discovery) announce() {
+    // Update timestamp
+    d.peerInfo.Timestamp = time.Now().Unix()
+
+    // Marshal peer info
+    data, err := json.Marshal(d.peerInfo)
+    if err != nil {
+        return
+    }
+
+    // Publish to topic
+    if err := d.topic.Publish(d.ctx, data); err != nil {
+        fmt.Printf("Failed to publish announcement: %v\n", err)
+    }
+}
+
 func (d *Discovery) handleMessages() {
     for {
         msg, err := d.sub.Next(d.ctx)
         if err != nil {
             if d.ctx.Err() != nil {
-                return // Context cancelled
+                return
             }
             continue
         }
@@ -115,55 +145,32 @@ func (d *Discovery) handleMessages() {
             continue
         }
 
-        // Validate timestamp
-        if time.Since(time.Unix(info.Timestamp, 0)) > peerTTL {
+        // Check timestamp
+        if time.Since(time.Unix(info.Timestamp, 0)) > peerTimeout {
             continue
         }
+
+        // Store/update peer
+        d.peers.Store(info.PeerID, info)
 
         // Update VPN routing
         d.vpn.handlePeerAnnouncement(info)
     }
 }
 
-// announceRoutine periodically announces this peer's presence
-func (d *Discovery) announceRoutine() {
-    ticker := time.NewTicker(announcementInterval)
-    defer ticker.Stop()
-
-    for {
-        select {
-        case <-d.ctx.Done():
-            return
-        case <-ticker.C:
-            if err := d.announce(); err != nil {
-                // Log error but continue
-                continue
+// GetPeers returns a list of known peers
+func (d *Discovery) GetPeers() []PeerInfo {
+    var peers []PeerInfo
+    d.peers.Range(func(key, value interface{}) bool {
+        if info, ok := value.(PeerInfo); ok {
+            // Filter out old peers
+            if time.Since(time.Unix(info.Timestamp, 0)) <= peerTimeout {
+                peers = append(peers, info)
+            } else {
+                d.peers.Delete(key)
             }
         }
-    }
-}
-
-// announce publishes this peer's information
-func (d *Discovery) announce() error {
-    d.mu.RLock()
-    info := d.peerInfo
-    d.mu.RUnlock()
-
-    // Update timestamp
-    info.Timestamp = time.Now().Unix()
-
-    // Marshal peer info
-    data, err := json.Marshal(info)
-    if err != nil {
-        return fmt.Errorf("failed to marshal peer info: %w", err)
-    }
-
-    // Publish to topic
-    return d.topic.Publish(d.ctx, data)
-}
-
-// generateRendezvousKey generates a deterministic key for DHT rendezvous
-func generateRendezvousKey(seed string) []byte {
-    hash := sha256.Sum256([]byte(seed))
-    return hash[:]
+        return true
+    })
+    return peers
 }
