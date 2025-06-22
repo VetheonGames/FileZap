@@ -142,8 +142,8 @@ Licensed under **GPLv3** — see `LICENSE` for details.
 ## 🚧 Project Status
 
 > ⚠️ **Pre-Alpha Warning:**  
-> FileZap is in an early **pre-alpha** stage. Chunking logic and the client are functional; the networking stack is under active development. A simple master-server model is being tested for swarm coordination, with decentralized governance planned for production.  
-> NAT punching and QUIC peer transport are being prototyped. Crypto incentives will be optional plugins later — for now, it’s pure distributed storage.  
+> FileZap is in an early **pre-alpha** stage. Chunking logic and the client are functional; the networking stack is under active development.
+> NAT punching and QUIC peer transport are being prototyped. Crypto incentives ***MAY*** be optional plugins later — for now, it’s pure distributed storage.  
 > The GUI is rough and integration is incomplete. Chunk retrieval and robust swarm logic are not yet functional. **FileZap should not be used for real file distribution at this time.**
 
 ---
