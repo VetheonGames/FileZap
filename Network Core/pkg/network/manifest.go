@@ -12,6 +12,7 @@ import (
     dht "github.com/libp2p/go-libp2p-kad-dht"
     record "github.com/libp2p/go-libp2p-record"
     pubsub "github.com/libp2p/go-libp2p-pubsub"
+    "github.com/libp2p/go-libp2p/core/host"
     "github.com/libp2p/go-libp2p/core/peer"
     mh "github.com/multiformats/go-multihash"
 )
@@ -80,12 +81,40 @@ func (v *validator) Select(key string, values [][]byte) (int, error) {
 }
 
 const (
-	manifestTopic            = "filezap-manifests"
-	replicationCheckInterval = time.Minute * 5
+    manifestTopic            = "filezap-manifests"
+    replicationCheckInterval = time.Minute * 5
+    DefaultReplicationGoal   = 3 // Default number of replicas for each manifest
 )
 
+// ManifestManager handles storage and replication of file manifests
+type ManifestManager struct {
+    ctx       context.Context
+    dht       *dht.IpfsDHT
+    store     map[string]*ManifestInfo
+    localNode peer.ID
+    topic     *pubsub.Topic
+    replicator *ManifestReplicator
+}
+
+// ManifestReplicator handles manifest replication across the network
+type ManifestReplicator struct {
+    dht       *dht.IpfsDHT
+    manifests *ManifestManager
+    interval  int
+}
+
+// Start begins manifest synchronization
+func (m *ManifestManager) Start() error {
+    return nil
+}
+
+// Stop halts manifest synchronization
+func (m *ManifestManager) Stop() error {
+    return nil
+}
+
 // NewManifestManager creates a new manifest manager
-func NewManifestManager(ctx context.Context, localID peer.ID, kdht *dht.IpfsDHT, ps *pubsub.PubSub) *ManifestManager {
+func NewManifestManager(ctx context.Context, h host.Host, kdht *dht.IpfsDHT, ps *pubsub.PubSub) (*ManifestManager, error) {
     // Set up validator
     nsval := record.NamespacedValidator{
         "pk":     record.PublicKeyValidator{},
@@ -110,7 +139,7 @@ func NewManifestManager(ctx context.Context, localID peer.ID, kdht *dht.IpfsDHT,
                 goto init
             }
         case <-ctx.Done():
-            return nil
+            return nil, fmt.Errorf("context cancelled")
         }
     }
 
@@ -122,9 +151,10 @@ init:
     }
 
     mm := &ManifestManager{
+        ctx:       ctx,
         dht:       kdht,
         store:     make(map[string]*ManifestInfo),
-        localNode: localID,
+        localNode: h.ID(),
         topic:     topic,
     }
 
@@ -137,7 +167,7 @@ mm.replicator = NewManifestReplicator(kdht, mm)
 		go mm.subscribeToUpdates(ctx)
 	}
 
-	return mm
+return mm, nil
 }
 
 // AddManifest stores a manifest and ensures it meets replication goals

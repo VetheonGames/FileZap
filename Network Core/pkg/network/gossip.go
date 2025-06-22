@@ -11,6 +11,18 @@ import (
     pubsub "github.com/libp2p/go-libp2p-pubsub"
 )
 
+// GossipManager handles peer discovery and network announcements
+type GossipManager interface {
+    Start() error
+    Stop() error
+    Broadcast(topic string, data []byte) error
+    AnnounceStorageNode(info *StorageNodeInfo) error
+    RemoveStorageNode(nodeID string) error
+    NotifyStorageSuccess(req *StorageRequest) error
+    NotifyStorageRejection(req *StorageRequest, reason string) error
+    GetPeers() []peer.ID
+}
+
 const (
     // Protocol IDs
     GossipProtocolID         = "/filezap/gossip/1.0.0"
@@ -31,8 +43,8 @@ type PeerGossipInfo struct {
     Version       string      `json:"version"`     // Protocol version
 }
 
-// GossipManager handles peer discovery and health monitoring
-type GossipManager struct {
+// GossipManagerImpl implements the GossipManager interface
+type GossipManagerImpl struct {
     ctx           context.Context
     host          host.Host
     pubsub        *pubsub.PubSub
@@ -59,7 +71,7 @@ type PeerMetrics struct {
 }
 
 // NewGossipManager creates a new gossip manager for peer discovery
-func NewGossipManager(ctx context.Context, h host.Host, ps *pubsub.PubSub) (*GossipManager, error) {
+func NewGossipManager(ctx context.Context, h host.Host, ps *pubsub.PubSub) (GossipManager, error) {
     // Create topic for peer discovery
     topic, err := ps.Join(PeerDiscoveryTopic)
     if err != nil {
@@ -72,7 +84,7 @@ func NewGossipManager(ctx context.Context, h host.Host, ps *pubsub.PubSub) (*Gos
         return nil, err
     }
 
-    gm := &GossipManager{
+    gm := &GossipManagerImpl{
         ctx:            ctx,
         host:           h,
         pubsub:         ps,
@@ -93,8 +105,29 @@ func NewGossipManager(ctx context.Context, h host.Host, ps *pubsub.PubSub) (*Gos
     return gm, nil
 }
 
+// Start begins the gossip protocol
+func (gm *GossipManagerImpl) Start() error {
+    go gm.startGossiping()
+    go gm.handlePeerUpdates()
+    go gm.cleanupStaleEntries()
+    return nil
+}
+
+// Stop halts all gossip operations
+func (gm *GossipManagerImpl) Stop() error {
+    if gm.ctx != nil && gm.ctx.Err() == nil {
+        gm.ctx.Done()
+    }
+    return nil
+}
+
+// Broadcast sends a message to the given topic
+func (gm *GossipManagerImpl) Broadcast(topic string, data []byte) error {
+    return gm.topic.Publish(gm.ctx, data)
+}
+
 // startGossiping periodically broadcasts peer information
-func (gm *GossipManager) startGossiping() {
+func (gm *GossipManagerImpl) startGossiping() {
     ticker := time.NewTicker(GossipInterval)
     defer ticker.Stop()
 
@@ -109,7 +142,7 @@ func (gm *GossipManager) startGossiping() {
 }
 
 // broadcastPeerInfo shares this peer's information with the network
-func (gm *GossipManager) broadcastPeerInfo() {
+func (gm *GossipManagerImpl) broadcastPeerInfo() {
     addrs := make([]string, 0)
     for _, addr := range gm.host.Addrs() {
         addrs = append(addrs, addr.String())
@@ -136,7 +169,7 @@ func (gm *GossipManager) broadcastPeerInfo() {
 }
 
 // handlePeerUpdates processes incoming peer information
-func (gm *GossipManager) handlePeerUpdates() {
+func (gm *GossipManagerImpl) handlePeerUpdates() {
     for {
         msg, err := gm.subscription.Next(gm.ctx)
         if err != nil {
@@ -161,7 +194,7 @@ func (gm *GossipManager) handlePeerUpdates() {
 }
 
 // updatePeerInfo updates the stored peer information
-func (gm *GossipManager) updatePeerInfo(info *PeerGossipInfo) {
+func (gm *GossipManagerImpl) updatePeerInfo(info *PeerGossipInfo) {
     gm.mu.Lock()
     defer gm.mu.Unlock()
 
@@ -186,7 +219,7 @@ func (gm *GossipManager) updatePeerInfo(info *PeerGossipInfo) {
 }
 
 // cleanupStaleEntries removes information about stale peers
-func (gm *GossipManager) cleanupStaleEntries() {
+func (gm *GossipManagerImpl) cleanupStaleEntries() {
     ticker := time.NewTicker(time.Minute)
     defer ticker.Stop()
 
@@ -210,7 +243,7 @@ func (gm *GossipManager) cleanupStaleEntries() {
 }
 
 // AnnounceStorageNode announces this node as a storage provider
-func (gm *GossipManager) AnnounceStorageNode(info *StorageNodeInfo) error {
+func (gm *GossipManagerImpl) AnnounceStorageNode(info *StorageNodeInfo) error {
     data, err := json.Marshal(struct {
         Type string         `json:"type"`
         Info *StorageNodeInfo `json:"info"`
@@ -225,7 +258,7 @@ func (gm *GossipManager) AnnounceStorageNode(info *StorageNodeInfo) error {
 }
 
 // RemoveStorageNode removes this node from storage providers
-func (gm *GossipManager) RemoveStorageNode(nodeID string) error {
+func (gm *GossipManagerImpl) RemoveStorageNode(nodeID string) error {
     data, err := json.Marshal(struct {
         Type   string `json:"type"`
         NodeID string `json:"node_id"`
@@ -240,7 +273,7 @@ func (gm *GossipManager) RemoveStorageNode(nodeID string) error {
 }
 
 // NotifyStorageRejection notifies network of rejected storage request
-func (gm *GossipManager) NotifyStorageRejection(req *StorageRequest, reason string) error {
+func (gm *GossipManagerImpl) NotifyStorageRejection(req *StorageRequest, reason string) error {
     data, err := json.Marshal(struct {
         Type   string         `json:"type"`
         Request *StorageRequest `json:"request"`
@@ -257,7 +290,7 @@ func (gm *GossipManager) NotifyStorageRejection(req *StorageRequest, reason stri
 }
 
 // NotifyStorageSuccess notifies network of successful storage
-func (gm *GossipManager) NotifyStorageSuccess(req *StorageRequest) error {
+func (gm *GossipManagerImpl) NotifyStorageSuccess(req *StorageRequest) error {
     data, err := json.Marshal(struct {
         Type    string         `json:"type"`
         Request *StorageRequest `json:"request"`
@@ -272,7 +305,19 @@ func (gm *GossipManager) NotifyStorageSuccess(req *StorageRequest) error {
 }
 
 // GetPeers returns all known peers
-func (gm *GossipManager) GetPeers() []*PeerGossipInfo {
+func (gm *GossipManagerImpl) GetPeers() []peer.ID {
+    gm.mu.RLock()
+    defer gm.mu.RUnlock()
+
+    peers := make([]peer.ID, 0, len(gm.peerStore))
+    for id := range gm.peerStore {
+        peers = append(peers, id)
+    }
+    return peers
+}
+
+// GetPeerInfo returns detailed information about known peers
+func (gm *GossipManagerImpl) GetPeerInfo() []*PeerGossipInfo {
     gm.mu.RLock()
     defer gm.mu.RUnlock()
 
@@ -284,7 +329,7 @@ func (gm *GossipManager) GetPeers() []*PeerGossipInfo {
 }
 
 // RecordSuccess records a successful interaction with a peer
-func (gm *GossipManager) RecordSuccess(id peer.ID, responseTime time.Duration) {
+func (gm *GossipManagerImpl) RecordSuccess(id peer.ID, responseTime time.Duration) {
     gm.mu.Lock()
     defer gm.mu.Unlock()
 
@@ -297,7 +342,7 @@ func (gm *GossipManager) RecordSuccess(id peer.ID, responseTime time.Duration) {
 }
 
 // RecordFailure records a failed interaction with a peer
-func (gm *GossipManager) RecordFailure(id peer.ID) {
+func (gm *GossipManagerImpl) RecordFailure(id peer.ID) {
     gm.mu.Lock()
     defer gm.mu.Unlock()
 
@@ -308,7 +353,7 @@ func (gm *GossipManager) RecordFailure(id peer.ID) {
 }
 
 // calculateUptime calculates the peer's uptime percentage
-func (gm *GossipManager) calculateUptime(metrics *PeerMetrics) float64 {
+func (gm *GossipManagerImpl) calculateUptime(metrics *PeerMetrics) float64 {
     total := metrics.successfulRequests + metrics.failedRequests
     if total == 0 {
         return 0
@@ -317,7 +362,7 @@ func (gm *GossipManager) calculateUptime(metrics *PeerMetrics) float64 {
 }
 
 // calculateAverageResponseTime calculates the peer's average response time
-func (gm *GossipManager) calculateAverageResponseTime(metrics *PeerMetrics) float64 {
+func (gm *GossipManagerImpl) calculateAverageResponseTime(metrics *PeerMetrics) float64 {
     if metrics.successfulRequests == 0 {
         return 0
     }

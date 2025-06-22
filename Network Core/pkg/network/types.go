@@ -1,94 +1,83 @@
 package network
 
 import (
-    "sync"
+    "context"
+    "fmt"
     "time"
 
-    "github.com/libp2p/go-libp2p/core/host"
     "github.com/libp2p/go-libp2p/core/peer"
-    dht "github.com/libp2p/go-libp2p-kad-dht"
-    pubsub "github.com/libp2p/go-libp2p-pubsub"
-
-    "github.com/VetheonGames/FileZap/NetworkCore/pkg/vpn"
 )
 
-// Basic configuration types
+// ValidationResult represents the outcome of chunk validation
+type ValidationResult int
 
-type NetworkManagerConfig struct {
-    Transport     TransportConfig
-    MetadataStore string
-    ChunkCacheDir string
-    VPN          *VPNConfig
+const (
+    // ValidationSuccess indicates the chunk is valid
+    ValidationSuccess ValidationResult = iota
+    // ValidationHashMismatch indicates the chunk hash doesn't match expected
+    ValidationHashMismatch
+    // ValidationSizeMismatch indicates the chunk size is incorrect
+    ValidationSizeMismatch
+    // ValidationContentMalformed indicates the chunk content is malformed
+    ValidationContentMalformed
+)
+
+// Size constants
+const (
+    maxChunkSize    = 100 * 1024 * 1024   // 100MB max chunk size
+    maxTotalSize    = 1024 * 1024 * 1024  // 1GB total storage limit
+    maxStorageSize  = 10 * 1024 * 1024 * 1024 // 10GB default max storage
+)
+
+// Vote related constants
+const (
+    QuorumTopic          = "filezap-quorum"
+    VotingTimeout        = 30 * time.Second
+    MinQuorumSize        = 5   // Minimum peers needed for valid quorum
+    MinVotingPercentage  = 67  // Min percentage needed for vote to pass (2/3 majority)
+    ReputationThreshold  = -50 // Reputation threshold for peer removal
+    MaxReputation        = 100 // Maximum reputation score
+    BaseVoteWeight       = 1   // Base voting weight for regular nodes
+    StorerVoteWeight     = 3   // Higher voting weight for storage nodes
+)
+
+// VoteType represents different types of votes
+type VoteType int
+
+const (
+    // VoteRemovePeer indicates a vote to remove a peer
+    VoteRemovePeer VoteType = iota
+    // VoteRemoveFile indicates a vote to remove a file
+    VoteRemoveFile
+    // VoteUpdateRules indicates a vote to update network rules
+    VoteUpdateRules
+)
+
+// Vote represents a network decision to be made
+type Vote struct {
+    ID        string    `json:"id"`
+    Type      VoteType  `json:"type"`
+    Target    string    `json:"target"`   // Peer ID or file hash
+    Reason    string    `json:"reason"`
+    Evidence  []byte    `json:"evidence"` // Optional evidence (e.g., invalid chunk data)
+    Timestamp time.Time `json:"timestamp"`
+    Proposer  peer.ID   `json:"proposer"`
 }
 
-type TransportConfig struct {
-    ListenAddrs     []string
-    ListenPort      int
-    EnableQUIC      bool
-    EnableTCP       bool
-    EnableRelay     bool
-    EnableAutoRelay bool
-    EnableHolePunch bool
-    QUICOpts        QUICOptions
+// VoteResponse represents a peer's vote
+type VoteResponse struct {
+    VoteID    string    `json:"vote_id"`
+    Voter     peer.ID   `json:"voter"`
+    Approve   bool      `json:"approve"`
+    Timestamp time.Time `json:"timestamp"`
+    IsStorer  bool      `json:"is_storer"` // Whether voter is a storage node
+    Weight    int       `json:"weight"`     // Voting weight (higher for storage nodes)
 }
 
-type QUICOptions struct {
-    MaxStreams       uint32
-    KeepAlivePeriod  time.Duration
-    HandshakeTimeout time.Duration
-    IdleTimeout      time.Duration
-}
-
-// Implementation types
-
-type networkNode struct {
-    host     host.Host
-    dht      *dht.IpfsDHT
-    pubsub   *pubsub.PubSub
-    overlay  *overlayNetwork
-}
-
-type overlayNetwork struct {
-    neighbors map[peer.ID]time.Time
-    maxPeers int
-    mu       sync.RWMutex
-}
-
-type networkEngine struct {
-    ctx           context.Context
-    cancel        context.CancelFunc
-    transportNode *networkNode
-    metadataNode  *networkNode
-    gossipMgr     GossipManager
-    quorum        *quorumManager
-    validator     Validator
-    manifests     ManifestManager
-    chunkStore    ChunkStore
-    vpnManager    *vpn.VPNManager
-    vpnDiscovery  *vpn.Discovery
-    mu            sync.RWMutex
-}
-
-// Data types
-
-type StorageRequest struct {
-    ChunkHash string
-    Data      []byte
-    Size      int64
-    Owner     peer.ID
-}
-
-type StorageNodeInfo struct {
-    ID             string
-    AvailableSpace int64
-    Uptime         float64
-    LastSeen       time.Time
-    ChunksStored   []string
-}
-
+// ManifestInfo contains metadata about a stored file
 type ManifestInfo struct {
     Name            string
-    Owner           peer.ID
+    Owner           string
     ChunkHashes     []string
     Size            int64
     Created         time.Time
@@ -97,25 +86,62 @@ type ManifestInfo struct {
     UpdatedAt       time.Time
 }
 
-type PeerGossipInfo struct {
-    ID            peer.ID
-    LastSeen      time.Time
-    Uptime        float64
-    ResponseTime  int64
+// StorageRequest represents a request to store data
+type StorageRequest struct {
+    ChunkHash string
+    Data      []byte
+    Size      int64
+    Owner     string
 }
 
-// Enums and constants
+// StorageNodeInfo contains information about a storage node
+type StorageNodeInfo struct {
+    ID             string
+    AvailableSpace int64
+    TotalSpace     int64
+    Uptime         float64
+    Version        string
+    Location       string
+}
 
-type VoteType int
-const (
-    VoteRemovePeer VoteType = iota
-    VoteRemoveFile
+// Error definitions
+var (
+    ErrNoRequestsPending = fmt.Errorf("no pending requests")
+    ErrStorageFull      = fmt.Errorf("storage full")
+    ErrInvalidChunk     = fmt.Errorf("invalid chunk")
 )
 
-type ValidationResult int
-const (
-    ValidationSuccess ValidationResult = iota
-    ValidationInvalidHash
-    ValidationInvalidSignature
-    ValidationInvalidSize
-)
+// Interface definitions
+
+// DHT defines the interface for DHT operations
+type DHT interface {
+    Bootstrap(ctx context.Context) error
+}
+
+// PubSub defines the interface for publish/subscribe operations
+type PubSub interface {
+    Publish(topic string, data []byte) error
+    Subscribe(topic string) (Subscription, error)
+}
+
+// Subscription defines the interface for pubsub subscriptions
+type Subscription interface {
+    Next() (Message, error)
+    Cancel()
+}
+
+// Message defines the interface for pubsub messages
+type Message interface {
+    Data() []byte
+    From() peer.ID
+    Topics() []string
+}
+
+// QuorumManager handles peer voting and consensus
+type QuorumManager interface {
+    Start() error
+    Stop() error
+    ProposeVote(voteType VoteType, target string, reason string, evidence []byte) error
+    StartVote(voteType VoteType, target string, proposer peer.ID) error
+    UpdatePeerReputation(p peer.ID, delta int) error
+}

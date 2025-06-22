@@ -355,3 +355,4 @@ func TestChunkStoreConcurrentTransfers(t *testing.T) {
 		t.Error(err)
 	}
 }
+

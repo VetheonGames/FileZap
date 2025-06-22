@@ -7,75 +7,10 @@ import (
     "sync"
     "time"
 
+    pubsub "github.com/libp2p/go-libp2p-pubsub"
     "github.com/libp2p/go-libp2p/core/host"
     "github.com/libp2p/go-libp2p/core/peer"
-    pubsub "github.com/libp2p/go-libp2p-pubsub"
 )
-
-const (
-    QuorumTopic            = "filezap-quorum"
-    VotingTimeout         = 30 * time.Second
-    MinQuorumSize        = 5      // Minimum peers needed for valid quorum
-    MinVotingPercentage  = 67     // Min percentage needed for vote to pass (2/3 majority)
-    ReputationThreshold  = -50    // Reputation threshold for peer removal
-    MaxReputation       = 100     // Maximum reputation score
-)
-
-// VoteType represents different types of network votes
-type VoteType int
-
-const (
-    VoteRemovePeer VoteType = iota
-    VoteRemoveFile
-    VoteUpdateRules
-)
-
-// Vote represents a network decision to be made
-type Vote struct {
-    ID          string          `json:"id"`
-    Type        VoteType        `json:"type"`
-    Target      string          `json:"target"`     // Peer ID or file hash
-    Reason      string          `json:"reason"`
-    Evidence    []byte          `json:"evidence"`   // Optional evidence (e.g., invalid chunk data)
-    Timestamp   time.Time       `json:"timestamp"`
-    Proposer    peer.ID         `json:"proposer"`
-}
-
-// VoteResponse represents a peer's vote
-type VoteResponse struct {
-    VoteID      string    `json:"vote_id"`
-    Voter       peer.ID   `json:"voter"`
-    Approve     bool      `json:"approve"`
-    Timestamp   time.Time `json:"timestamp"`
-    IsStorer    bool      `json:"is_storer"`    // Whether voter is a storage node
-    Weight      int       `json:"weight"`       // Voting weight (higher for storage nodes)
-}
-
-const (
-    BaseVoteWeight     = 1    // Base voting weight for regular nodes
-    StorerVoteWeight   = 3    // Higher voting weight for storage nodes
-)
-
-// QuorumManager handles network consensus and peer reputation
-type QuorumManager struct {
-    ctx           context.Context
-    host          host.Host
-    pubsub        *pubsub.PubSub
-    topic         *pubsub.Topic
-    subscription  *pubsub.Subscription
-    gossipMgr     *GossipManager
-
-    // Voting state
-    activeVotes   map[string]*VoteState
-    peerRep       map[peer.ID]int   // Peer reputation scores
-    voteResults   map[string]bool   // Track vote results for quick lookup
-    mu            sync.RWMutex
-
-    // Channels
-    voteComplete  chan *Vote
-    peerBanned    chan peer.ID
-    fileRemoved   chan string
-}
 
 // VoteState tracks the state of an active vote
 type VoteState struct {
@@ -85,8 +20,8 @@ type VoteState struct {
     complete      bool
 }
 
-// NewQuorumManager creates a new quorum management system
-func NewQuorumManager(ctx context.Context, h host.Host, ps *pubsub.PubSub, gm *GossipManager) (*QuorumManager, error) {
+// newQuorumManagerImpl creates a new quorum management system implementation
+func newQuorumManagerImpl(ctx context.Context, h host.Host, ps *pubsub.PubSub, gm GossipManager) (*QuorumManagerImpl, error) {
     // Join quorum topic
     topic, err := ps.Join(QuorumTopic)
     if err != nil {
@@ -99,7 +34,7 @@ func NewQuorumManager(ctx context.Context, h host.Host, ps *pubsub.PubSub, gm *G
         return nil, err
     }
 
-    qm := &QuorumManager{
+    qm := &QuorumManagerImpl{
         ctx:          ctx,
         host:         h,
         pubsub:       ps,
@@ -121,8 +56,39 @@ func NewQuorumManager(ctx context.Context, h host.Host, ps *pubsub.PubSub, gm *G
     return qm, nil
 }
 
+// QuorumManagerImpl implements the QuorumManager interface
+type QuorumManagerImpl struct {
+    ctx          context.Context
+    host         host.Host
+    pubsub       *pubsub.PubSub
+    topic        *pubsub.Topic
+    subscription *pubsub.Subscription
+    gossipMgr    GossipManager
+
+    // Voting state
+    activeVotes map[string]*VoteState
+    peerRep     map[peer.ID]int   // Peer reputation scores
+    voteResults map[string]bool   // Track vote results for quick lookup
+    mu          sync.RWMutex
+
+    // Channels
+    voteComplete chan *Vote
+    peerBanned   chan peer.ID
+    fileRemoved  chan string
+}
+
+// Start implements the QuorumManager interface
+func (qm *QuorumManagerImpl) Start() error {
+    return nil
+}
+
+// Stop implements the QuorumManager interface
+func (qm *QuorumManagerImpl) Stop() error {
+    return nil
+}
+
 // ProposeVote initiates a new network vote
-func (qm *QuorumManager) ProposeVote(voteType VoteType, target string, reason string, evidence []byte) error {
+func (qm *QuorumManagerImpl) ProposeVote(voteType VoteType, target string, reason string, evidence []byte) error {
     // Check if we have enough peers for a valid quorum
     peers := qm.gossipMgr.GetPeers()
     if len(peers) < MinQuorumSize {
@@ -139,7 +105,7 @@ func (qm *QuorumManager) ProposeVote(voteType VoteType, target string, reason st
         Proposer:  qm.host.ID(),
     }
 
-// Initialize vote state
+    // Initialize vote state
     voteState := &VoteState{
         Vote:      vote,
         Responses: make(map[peer.ID]*VoteResponse),
@@ -161,7 +127,7 @@ func (qm *QuorumManager) ProposeVote(voteType VoteType, target string, reason st
 }
 
 // handleVotes processes incoming vote messages
-func (qm *QuorumManager) handleVotes() {
+func (qm *QuorumManagerImpl) handleVotes() {
     for {
         msg, err := qm.subscription.Next(qm.ctx)
         if err != nil {
@@ -189,7 +155,7 @@ func (qm *QuorumManager) handleVotes() {
 }
 
 // processNewVote handles a new vote proposal
-func (qm *QuorumManager) processNewVote(vote *Vote) {
+func (qm *QuorumManagerImpl) processNewVote(vote *Vote) {
     qm.mu.Lock()
     defer qm.mu.Unlock()
 
@@ -221,7 +187,7 @@ func (qm *QuorumManager) processNewVote(vote *Vote) {
     }
     qm.topic.Publish(qm.ctx, data)
 
-// Track vote locally
+    // Track vote locally
     qm.activeVotes[vote.ID] = &VoteState{
         Vote:      vote,
         Responses: make(map[peer.ID]*VoteResponse),
@@ -230,7 +196,7 @@ func (qm *QuorumManager) processNewVote(vote *Vote) {
 }
 
 // processVoteResponse handles an incoming vote response
-func (qm *QuorumManager) processVoteResponse(resp *VoteResponse) {
+func (qm *QuorumManagerImpl) processVoteResponse(resp *VoteResponse) {
     qm.mu.Lock()
     defer qm.mu.Unlock()
 
@@ -239,27 +205,27 @@ func (qm *QuorumManager) processVoteResponse(resp *VoteResponse) {
         return
     }
 
-// Record vote with weight
-totalWeight := 0
-approvalWeight := 0
-for _, v := range voteState.Responses {
-    if v.IsStorer {
-        totalWeight += StorerVoteWeight
-        if v.Approve {
-            approvalWeight += StorerVoteWeight
-        }
-    } else {
-        totalWeight += BaseVoteWeight
-        if v.Approve {
-            approvalWeight += BaseVoteWeight
+    // Record vote with weight
+    totalWeight := 0
+    approvalWeight := 0
+    for _, v := range voteState.Responses {
+        if v.IsStorer {
+            totalWeight += StorerVoteWeight
+            if v.Approve {
+                approvalWeight += StorerVoteWeight
+            }
+        } else {
+            totalWeight += BaseVoteWeight
+            if v.Approve {
+                approvalWeight += BaseVoteWeight
+            }
         }
     }
-}
 
-// Add new vote
-voteState.Responses[resp.Voter] = resp
+    // Add new vote
+    voteState.Responses[resp.Voter] = resp
 
-// Check if we have enough weighted votes
+    // Check if we have enough weighted votes
     totalPeers := len(qm.gossipMgr.GetPeers())
     
     minRequiredWeight := (totalPeers * BaseVoteWeight * MinVotingPercentage) / 100
@@ -276,7 +242,7 @@ voteState.Responses[resp.Voter] = resp
 }
 
 // validatePeerRemoval checks if a peer should be removed
-func (qm *QuorumManager) validatePeerRemoval(vote *Vote) bool {
+func (qm *QuorumManagerImpl) validatePeerRemoval(vote *Vote) bool {
     // Check if peer has poor reputation
     if rep, exists := qm.peerRep[peer.ID(vote.Target)]; exists {
         if rep <= ReputationThreshold {
@@ -294,19 +260,19 @@ func (qm *QuorumManager) validatePeerRemoval(vote *Vote) bool {
 }
 
 // validateFileRemoval checks if a file should be removed
-func (qm *QuorumManager) validateFileRemoval(vote *Vote) bool {
+func (qm *QuorumManagerImpl) validateFileRemoval(vote *Vote) bool {
     // TODO: Implement file content validation
     return true
 }
 
 // validateRuleUpdate checks if a rule update should be approved
-func (qm *QuorumManager) validateRuleUpdate(vote *Vote) bool {
+func (qm *QuorumManagerImpl) validateRuleUpdate(vote *Vote) bool {
     // TODO: Implement rule update validation
     return false
 }
 
 // processVoteResults handles completed votes
-func (qm *QuorumManager) processVoteResults() {
+func (qm *QuorumManagerImpl) processVoteResults() {
     for {
         select {
         case <-qm.ctx.Done():
@@ -331,7 +297,7 @@ func (qm *QuorumManager) processVoteResults() {
 }
 
 // UpdatePeerReputation adjusts a peer's reputation score
-func (qm *QuorumManager) UpdatePeerReputation(id peer.ID, delta int) {
+func (qm *QuorumManagerImpl) UpdatePeerReputation(id peer.ID, delta int) error {
     qm.mu.Lock()
     defer qm.mu.Unlock()
 
@@ -347,6 +313,7 @@ func (qm *QuorumManager) UpdatePeerReputation(id peer.ID, delta int) {
     }
 
     qm.peerRep[id] = updated
+    return nil
 }
 
 // isVoteResponse determines if a message is a vote response
@@ -355,4 +322,9 @@ func isVoteResponse(data []byte) bool {
         VoteID string `json:"vote_id"`
     }
     return json.Unmarshal(data, &msg) == nil && msg.VoteID != ""
+}
+
+// StartVote implements the QuorumManager interface
+func (qm *QuorumManagerImpl) StartVote(voteType VoteType, target string, proposer peer.ID) error {
+    return qm.ProposeVote(voteType, target, "Vote initiated by "+proposer.String(), nil)
 }

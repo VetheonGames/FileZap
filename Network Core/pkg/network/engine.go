@@ -5,194 +5,119 @@ import (
     "fmt"
     "time"
 
+    "github.com/VetheonGames/FileZap/NetworkCore/pkg/vpn"
+    "github.com/ipfs/go-cid"
+    "github.com/libp2p/go-libp2p"
     "github.com/libp2p/go-libp2p/core/host"
     "github.com/libp2p/go-libp2p/core/peer"
-    ma "github.com/multiformats/go-multiaddr"
-
-    "github.com/VetheonGames/FileZap/NetworkCore/pkg/network/api"
-    "github.com/VetheonGames/FileZap/NetworkCore/pkg/vpn"
+    pubsub "github.com/libp2p/go-libp2p-pubsub"
+    dht "github.com/libp2p/go-libp2p-kad-dht"
 )
 
-// DefaultNetworkConfig returns default network settings
-func DefaultNetworkConfig() *api.NetworkConfig {
-    transport := DefaultTransportConfig()
-    return &api.NetworkConfig{
-        Transport:     *transport,
-        MetadataStore: "metadata",
-        ChunkCacheDir: "chunks",
-        VPNConfig:    DefaultVPNConfig(),
-    }
-}
+var (
+    // VPNProviderKey is used to identify VPN service providers in the DHT
+    VPNProviderKey = cid.NewCidV1(cid.Raw, []byte("vpn-provider"))
+)
 
 // NetworkEngine manages network operations
 type NetworkEngine struct {
     ctx           context.Context
     cancel        context.CancelFunc
-    transportNode *transportNode
-    metadataNode  *transportNode
-    gossipMgr     *GossipManager
-    quorum        *QuorumManager
+    startTime     time.Time
+    config        *NetworkConfig
+    transportHost host.Host
+    metadataHost  host.Host
+    nodeID        peer.ID
+    gossipMgr     GossipManager
+    quorum        QuorumManager
     validator     *ChunkValidator
-    manifests     *ManifestManager
+    manifests     ManifestManager
     chunkStore    *ChunkStore
     vpnManager    *vpn.VPNManager
-    vpnDiscovery  *vpn.Discovery
+    dht           *dht.IpfsDHT
+    pubsub        *pubsub.PubSub
 }
 
-// NewNetworkEngine creates a new network engine
-func NewNetworkEngine(ctx context.Context, cfg *api.NetworkConfig) (*NetworkEngine, error) {
+// NewNetworkEngine creates a new network engine instance
+func NewNetworkEngine(ctx context.Context, cfg *NetworkConfig) (*NetworkEngine, error) {
+    // Create the transport host
+    transportHost, err := libp2p.New(
+        libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", cfg.Transport.ListenPort)),
+        libp2p.DisableRelay(),
+    )
+    if err != nil {
+        return nil, fmt.Errorf("failed to create transport host: %v", err)
+    }
+
+    // Create the metadata host (using a different port)
+    metadataHost, err := libp2p.New(
+        libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", cfg.Transport.ListenPort+1)),
+        libp2p.DisableRelay(),
+    )
+    if err != nil {
+        transportHost.Close()
+        return nil, fmt.Errorf("failed to create metadata host: %v", err)
+    }
+
     ctx, cancel := context.WithCancel(ctx)
-
-    // Create transport network (QUIC-enabled)
-    transportCfg := &api.TransportConfig{
-        ListenAddrs:     cfg.Transport.ListenAddrs,
-        ListenPort:      cfg.Transport.ListenPort,
-        EnableQUIC:      cfg.Transport.EnableQUIC,
-        EnableTCP:       cfg.Transport.EnableTCP,
-        EnableRelay:     cfg.Transport.EnableRelay,
-        EnableAutoRelay: cfg.Transport.EnableAutoRelay,
-        EnableHolePunch: cfg.Transport.EnableHolePunch,
-        QUICOpts:        cfg.Transport.QUICOpts,
-    }
-    transportNode, err := NewTransportNode(ctx, transportCfg)
-    if err != nil {
-        cancel()
-        return nil, fmt.Errorf("failed to create transport node: %w", err)
-    }
-
-    // Create metadata network (TCP-based)
-    metadataCfg := *transportCfg
-    metadataCfg.EnableQUIC = false
-    metadataNode, err := NewTransportNode(ctx, &metadataCfg)
-    if err != nil {
-        transportNode.Close()
-        cancel()
-        return nil, fmt.Errorf("failed to create metadata node: %w", err)
-    }
-
-    // Initialize gossip manager for peer discovery
-    gossipMgr, err := NewGossipManager(ctx, transportNode.host, transportNode.pubsub)
-    if err != nil {
-        transportNode.Close()
-        metadataNode.Close()
-        cancel()
-        return nil, fmt.Errorf("failed to create gossip manager: %w", err)
-    }
-
-    // Initialize manifest manager
-    manifests := NewManifestManager(ctx, metadataNode.host.ID(), metadataNode.dht, metadataNode.pubsub)
-
-    // Initialize chunk store
-    chunkStore := NewChunkStore(transportNode.host)
-
-    // Initialize quorum manager
-    quorum, err := NewQuorumManager(ctx, transportNode.host, transportNode.pubsub, gossipMgr)
-    if err != nil {
-        transportNode.Close()
-        metadataNode.Close()
-        cancel()
-        return nil, fmt.Errorf("failed to create quorum manager: %w", err)
-    }
-
-    // Initialize chunk validator
-    validator := NewChunkValidator(ctx, quorum, chunkStore)
-
     engine := &NetworkEngine{
-        ctx:           ctx,
-        cancel:        cancel,
-        transportNode: transportNode,
-        metadataNode:  metadataNode,
-        gossipMgr:     gossipMgr,
-        quorum:        quorum,
-        validator:     validator,
-        manifests:     manifests,
-        chunkStore:    chunkStore,
+        ctx:          ctx,
+        cancel:       cancel,
+        startTime:    time.Now(),
+        config:       cfg,
+        transportHost: transportHost,
+        metadataHost: metadataHost,
+        nodeID:       transportHost.ID(),
     }
-
-    // Initialize VPN if enabled
-    if cfg.VPNConfig != nil && cfg.VPNConfig.Enabled {
-        if err := engine.initVPN(ctx, transportNode.host, cfg.VPNConfig); err != nil {
-            engine.Close()
-            return nil, fmt.Errorf("failed to initialize VPN: %w", err)
-        }
-    }
-
-    // Start monitoring network health
-    go engine.monitorNetwork()
 
     return engine, nil
 }
 
-// Connect connects to a peer on both transport and metadata networks
-func (e *NetworkEngine) Connect(addr ma.Multiaddr) error {
-    peerInfo, err := peer.AddrInfoFromP2pAddr(addr)
-    if err != nil {
-        return fmt.Errorf("invalid peer address: %w", err)
-    }
+// GetNodeID returns the node's peer ID
+func (e *NetworkEngine) GetNodeID() peer.ID {
+    return e.nodeID
+}
 
-    // Connect on transport network
-    if err := e.transportNode.host.Connect(e.ctx, *peerInfo); err != nil {
-        return fmt.Errorf("failed to connect transport: %w", err)
-    }
+// GetTransportHost returns the transport layer host
+func (e *NetworkEngine) GetTransportHost() host.Host {
+    return e.transportHost
+}
 
-    // Connect on metadata network
-    if err := e.metadataNode.host.Connect(e.ctx, *peerInfo); err != nil {
-        return fmt.Errorf("failed to connect metadata: %w", err)
-    }
-
-    // Update gossip manager
-    e.gossipMgr.updatePeerInfo(&PeerGossipInfo{
-        ID:        peerInfo.ID,
-        LastSeen:  time.Now(),
-    })
-
-    return nil
+// GetMetadataHost returns the metadata layer host
+func (e *NetworkEngine) GetMetadataHost() host.Host {
+    return e.metadataHost
 }
 
 // Close shuts down the network engine
 func (e *NetworkEngine) Close() error {
-    e.cancel()
-
-    var errs []error
-
-    // Close VPN if enabled
+    if err := e.transportHost.Close(); err != nil {
+        return fmt.Errorf("failed to close transport host: %v", err)
+    }
+    if err := e.metadataHost.Close(); err != nil {
+        return fmt.Errorf("failed to close metadata host: %v", err)
+    }
     if e.vpnManager != nil {
-        if err := e.vpnManager.Close(); err != nil {
-            errs = append(errs, fmt.Errorf("failed to close VPN manager: %w", err))
-        }
+        e.vpnManager.Close()
     }
-
-    if err := e.transportNode.Close(); err != nil {
-        errs = append(errs, fmt.Errorf("failed to close transport node: %w", err))
-    }
-    if err := e.metadataNode.Close(); err != nil {
-        errs = append(errs, fmt.Errorf("failed to close metadata node: %w", err))
-    }
-
-    if len(errs) > 0 {
-        return fmt.Errorf("errors during shutdown: %v", errs)
-    }
+    e.cancel()
     return nil
 }
 
-// GetTransportHost returns the transport network host
-func (e *NetworkEngine) GetTransportHost() host.Host {
-    return e.transportNode.host
-}
+// initVPN initializes VPN functionality
+func (e *NetworkEngine) initVPN(ctx context.Context, h host.Host, cfg *VPNConfig) error {
+    vpnConfig := &vpn.Config{
+        NetworkCIDR:   cfg.NetworkCIDR,
+        InterfaceName: cfg.InterfaceName,
+        MTU:          vpn.DefaultMTU,
+    }
 
-// GetMetadataHost returns the metadata network host
-func (e *NetworkEngine) GetMetadataHost() host.Host {
-    return e.metadataNode.host
-}
+    var err error
+    e.vpnManager, err = vpn.NewVPNManager(ctx, h, vpnConfig)
+    if err != nil {
+        return fmt.Errorf("failed to create VPN manager: %w", err)
+    }
 
-// GetNodeID returns this node's ID
-func (e *NetworkEngine) GetNodeID() string {
-    return e.transportNode.host.ID().String()
-}
-
-// GetPeers returns a list of connected peers
-func (e *NetworkEngine) GetPeers() []peer.ID {
-    return e.transportNode.host.Network().Peers()
+    return nil
 }
 
 // GetVPNManager returns the VPN manager if enabled
@@ -200,80 +125,102 @@ func (e *NetworkEngine) GetVPNManager() *vpn.VPNManager {
     return e.vpnManager
 }
 
-// Bootstrap connects to initial peers to join the network
-func (e *NetworkEngine) Bootstrap(addrs []peer.AddrInfo) error {
-    for _, addr := range addrs {
-        if err := e.transportNode.host.Connect(e.ctx, addr); err != nil {
-            return fmt.Errorf("failed to connect to bootstrap peer: %w", err)
+// GetVPNStatus returns the current VPN status
+func (e *NetworkEngine) GetVPNStatus() *VPNStatus {
+    if e.vpnManager == nil {
+        return &VPNStatus{Connected: false}
+    }
+
+    peers := e.vpnManager.GetPeers()
+    activePeers := make([]peer.ID, len(peers))
+    copy(activePeers, peers)
+
+    return &VPNStatus{
+        Connected:   len(activePeers) > 0,
+        LocalIP:     e.vpnManager.GetLocalIP(),
+        PeerCount:   len(activePeers),
+        ActivePeers: activePeers,
+    }
+}
+
+// File operations
+func (e *NetworkEngine) AddZapFile(manifest *ManifestInfo, chunks map[string][]byte) error {
+    if err := e.manifests.AddManifest(manifest); err != nil {
+        return fmt.Errorf("failed to add manifest: %w", err)
+    }
+
+    for hash, data := range chunks {
+        if !e.chunkStore.Store(hash, data) {
+            return fmt.Errorf("failed to store chunk %s", hash)
         }
-        if err := e.metadataNode.host.Connect(e.ctx, addr); err != nil {
-            return fmt.Errorf("failed to connect metadata to bootstrap peer: %w", err)
+    }
+
+    return nil
+}
+
+func (e *NetworkEngine) GetZapFile(name string) (*ManifestInfo, map[string][]byte, error) {
+    manifest, err := e.manifests.GetManifest(name)
+    if err != nil {
+        return nil, nil, fmt.Errorf("failed to get manifest: %w", err)
+    }
+
+    chunks := make(map[string][]byte)
+    for _, hash := range manifest.ChunkHashes {
+        data, ok := e.chunkStore.Get(hash)
+        if !ok {
+            return nil, nil, fmt.Errorf("chunk not found: %s", hash)
         }
+        chunks[hash] = data
+    }
+
+    return manifest, chunks, nil
+}
+
+func (e *NetworkEngine) ReportBadFile(name string, reason string) error {
+    return e.quorum.StartVote(VoteRemoveFile, name, e.transportHost.ID())
+}
+
+// Storage operations
+func (e *NetworkEngine) RegisterStorageNode() error {
+    info := &StorageNodeInfo{
+        ID:             e.transportHost.ID().String(),
+        AvailableSpace: maxStorageSize,
+        TotalSpace:     maxStorageSize,
+        Uptime:         100.0, // TODO: Calculate actual uptime
+        Version:        "0.1.0",
+        Location:       "", // TODO: Add location support
+    }
+    return e.gossipMgr.AnnounceStorageNode(info)
+}
+
+func (e *NetworkEngine) UnregisterStorageNode() error {
+    nodeID := e.transportHost.ID()
+    return e.gossipMgr.RemoveStorageNode(nodeID.String())
+}
+
+func (e *NetworkEngine) GetStorageRequest() (*StorageRequest, error) {
+    return e.chunkStore.GetPendingRequest()
+}
+
+func (e *NetworkEngine) ValidateChunkRequest(req *StorageRequest) error {
+    result := e.validator.ValidateChunk(req.Data, req.ChunkHash, peer.ID(req.Owner))
+    if result != ValidationSuccess {
+        return ErrInvalidChunk
     }
     return nil
 }
 
-// monitorNetwork monitors network health and peer behavior
-func (e *NetworkEngine) monitorNetwork() {
-    ticker := time.NewTicker(time.Minute)
-    defer ticker.Stop()
-
-    for {
-        select {
-        case <-e.ctx.Done():
-            return
-        case <-ticker.C:
-            e.checkPeerHealth()
-        case id := <-e.quorum.peerBanned:
-            e.handleBannedPeer(id)
-        case name := <-e.quorum.fileRemoved:
-            e.handleRemovedFile(name)
-        }
+func (e *NetworkEngine) StoreChunk(req *StorageRequest) error {
+    if !e.chunkStore.Store(req.ChunkHash, req.Data) {
+        return ErrStorageFull
     }
+    return nil
 }
 
-// checkPeerHealth checks the health of connected peers
-func (e *NetworkEngine) checkPeerHealth() {
-    peers := e.gossipMgr.GetPeers()
-    for _, info := range peers {
-        // Check if peer is responsive
-        if time.Since(info.LastSeen) > time.Hour {
-            e.quorum.UpdatePeerReputation(info.ID, -1)
-        }
-
-        // Check peer's uptime
-        if info.Uptime < 50 {
-            e.quorum.UpdatePeerReputation(info.ID, -1)
-        }
-
-        // Check response time
-        if info.ResponseTime > 1000 { // >1s average response
-            e.quorum.UpdatePeerReputation(info.ID, -1)
-        }
-    }
+func (e *NetworkEngine) RejectStorageRequest(req *StorageRequest, reason string) error {
+    return e.gossipMgr.NotifyStorageRejection(req, reason)
 }
 
-// handleBannedPeer handles cleanup when a peer is banned
-func (e *NetworkEngine) handleBannedPeer(id peer.ID) {
-    // Disconnect from peer
-    if err := e.transportNode.host.Network().ClosePeer(id); err != nil {
-        return
-    }
-    if err := e.metadataNode.host.Network().ClosePeer(id); err != nil {
-        return
-    }
-
-    // Remove stored chunks from banned peer
-    // TODO: Implement chunk cleanup
-}
-
-// handleRemovedFile handles cleanup when a file is removed
-func (e *NetworkEngine) handleRemovedFile(name string) {
-    // Remove manifest
-    if manifest, err := e.manifests.GetManifest(name); err == nil {
-        // Remove associated chunks
-        for _, hash := range manifest.ChunkHashes {
-            e.chunkStore.Remove(hash)
-        }
-    }
+func (e *NetworkEngine) AcknowledgeStorage(req *StorageRequest) error {
+    return e.gossipMgr.NotifyStorageSuccess(req)
 }
